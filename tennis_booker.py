@@ -44,6 +44,10 @@ DEFAULT_LOG_FILE = "tennis_booker.log"
 DEFAULT_OTP_REGEX = r"\b\d{4,8}\b"
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_DUE_WINDOW_SECONDS = 120
+OUTCOME_RETRY = "retry"
+OUTCOME_BOOKED = "booked"
+OUTCOME_DRY_RUN_DONE = "dry_run_done"
+OUTCOME_FULL = "full"
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -732,6 +736,28 @@ def find_preferred_slot(day: dict[str, Any], preferred_starts: tuple[str, ...]) 
     return None, slots
 
 
+def preferred_slots(day: dict[str, Any], preferred_starts: tuple[str, ...]) -> list[dict[str, Any]]:
+    slots = day.get("timeSlots") or []
+    by_start = {slot.get("startTime"): slot for slot in slots if isinstance(slot, dict)}
+    return [by_start[start] for start in preferred_starts if start in by_start]
+
+
+def classify_unavailable(day: dict[str, Any] | None, preferred_starts: tuple[str, ...]) -> tuple[str, str]:
+    if not day:
+        return OUTCOME_RETRY, "target date not returned"
+    day_status = str(day.get("status") or "")
+    slots = preferred_slots(day, preferred_starts)
+    statuses = [str(slot.get("status") or "") for slot in slots]
+    if day_status == "Not Yet Open" or "Not Yet Open" in statuses:
+        return OUTCOME_RETRY, f"not_yet_open day_status={day_status!r} slot_statuses={statuses!r}"
+    terminal_full = {"Full", "Booked", "Unavailable"}
+    if slots and all(status in terminal_full for status in statuses):
+        return OUTCOME_FULL, f"already_booked_or_unavailable day_status={day_status!r} slot_statuses={statuses!r}"
+    if any(status == "Full" for status in statuses):
+        return OUTCOME_FULL, f"already_full day_status={day_status!r} slot_statuses={statuses!r}"
+    return OUTCOME_RETRY, f"not_available_yet day_status={day_status!r} slot_statuses={statuses!r}"
+
+
 def summarize_slots(slots: list[dict[str, Any]], preferred_starts: tuple[str, ...]) -> str:
     lines = []
     for slot in slots:
@@ -1066,7 +1092,7 @@ def attempt_once(
     payment_method: str,
     do_validate: bool,
     do_book: bool,
-) -> bool:
+) -> str:
     use_color = not getattr(session, "no_color", False)
     attempt_started = dt.datetime.now().astimezone()
     print(
@@ -1086,7 +1112,7 @@ def attempt_once(
             f"facility={facility.get('name')} date={booking_date} target date not returned",
             flush=True,
         )
-        return False
+        return OUTCOME_RETRY
 
     slot, slots = find_preferred_slot(day, preferred_starts)
     print(
@@ -1098,13 +1124,14 @@ def attempt_once(
     )
 
     if not slot:
+        outcome, reason = classify_unavailable(day, preferred_starts)
         print(
-            colorize("Poll outcome", Style.GRAY, use_color)
+            colorize("Poll outcome", Style.RED if outcome == OUTCOME_FULL else Style.GRAY, use_color)
             + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
-            f"available=false next_sleep_pending=true",
+            f"available=false outcome={outcome} reason={reason}",
             flush=True,
         )
-        return False
+        return outcome
 
     slot_id = slot["id"]
     print(
@@ -1114,7 +1141,7 @@ def attempt_once(
         flush=True,
     )
 
-    if do_validate or do_book:
+    if do_validate and not do_book:
         print(
             colorize("Validation start", Style.BLUE, use_color)
             + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
@@ -1138,7 +1165,7 @@ def attempt_once(
             f"reason=slot_available_but_book_false",
             flush=True,
         )
-        return True
+        return OUTCOME_DRY_RUN_DONE
 
     print(
         colorize("Booking confirm start", Style.BLUE, use_color)
@@ -1146,7 +1173,29 @@ def attempt_once(
         f"slot_id={slot_id} payment_method={payment_method}",
         flush=True,
     )
-    result = confirm_booking(session, booking_date, facility_id, slot_id, payment_method)
+    try:
+        result = confirm_booking(session, booking_date, facility_id, slot_id, payment_method)
+    except ApiError as exc:
+        if exc.status_code != 422:
+            raise
+        print(
+            colorize("Booking confirm rejected; rechecking availability", Style.YELLOW, use_color)
+            + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+            f"status={exc.status_code} body={exc.body}",
+            flush=True,
+        )
+        recheck = request_json(session, "GET", facility_url(facility_id, booking_date))
+        recheck_day = get_date_entry(recheck, booking_date)
+        outcome, reason = classify_unavailable(recheck_day, preferred_starts)
+        recheck_slots = (recheck_day or {}).get("timeSlots") or []
+        print(
+            colorize("Post-failure availability", Style.RED if outcome == OUTCOME_FULL else Style.YELLOW, use_color)
+            + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+            f"outcome={outcome} reason={reason} "
+            f"availability=\"{summarize_slots(recheck_slots, preferred_starts)}\"",
+            flush=True,
+        )
+        return outcome
     result_payload = result.get("data") or {}
     print(
         colorize("Booking confirm end", Style.GREEN, use_color)
@@ -1157,7 +1206,9 @@ def attempt_once(
     )
     print("Booking result:", json.dumps(result, indent=2), flush=True)
     status = ((result.get("data") or {}).get("bookingStatus") or "").lower()
-    return status in {"booked", "onhold", "pending"}
+    if status in {"booked", "onhold", "pending"}:
+        return OUTCOME_BOOKED
+    return OUTCOME_RETRY
 
 
 def load_session(args: argparse.Namespace) -> tuple[requests.Session, str, bool]:
@@ -1218,10 +1269,10 @@ def attempt_with_auth_retry(
     payment_method: str,
     do_validate: bool,
     do_book: bool,
-) -> tuple[bool, str]:
+) -> tuple[str, str]:
     token = maybe_reload_token(args, session, token, fixed_token)
     try:
-        done = attempt_once(
+        outcome = attempt_once(
             session=session,
             booking_date=booking_date,
             facility_id=facility_id,
@@ -1230,7 +1281,7 @@ def attempt_with_auth_retry(
             do_validate=do_validate,
             do_book=do_book,
         )
-        return done, token
+        return outcome, token
     except ApiError as exc:
         if fixed_token or exc.status_code != 401:
             raise
@@ -1244,7 +1295,7 @@ def attempt_with_auth_retry(
                 + f" expiring_at={exp.isoformat(timespec='seconds')}",
                 flush=True,
             )
-        done = attempt_once(
+        outcome = attempt_once(
             session=session,
             booking_date=booking_date,
             facility_id=facility_id,
@@ -1253,7 +1304,7 @@ def attempt_with_auth_retry(
             do_validate=do_validate,
             do_book=do_book,
         )
-        return done, token
+        return outcome, token
 
 
 def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
@@ -1369,7 +1420,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                 flush=True,
             )
             try:
-                done, token = attempt_with_auth_retry(
+                outcome, token = attempt_with_auth_retry(
                     args=args,
                     session=session,
                     token=token,
@@ -1381,12 +1432,22 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                     do_validate=job["validate"],
                     do_book=job["book"],
                 )
-                if done:
+                if outcome in {OUTCOME_BOOKED, OUTCOME_DRY_RUN_DONE}:
                     job_done = True
                     print(
                         colorize("Job complete", Style.GREEN + Style.BOLD, use_color)
                         + f" job={job['name']} date={job['date']} attempts={attempts} "
+                        f"outcome={outcome} "
                         f"at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')}",
+                        flush=True,
+                    )
+                    break
+                if outcome == OUTCOME_FULL:
+                    failures += 1
+                    failure_reason = "slot is already full"
+                    print(
+                        colorize("Job terminal failure", Style.RED, use_color)
+                        + f" job={job['name']} date={job['date']} attempts={attempts} outcome={outcome}",
                         flush=True,
                     )
                     break
@@ -1599,7 +1660,7 @@ def main() -> int:
             flush=True,
         )
         try:
-            done, token = attempt_with_auth_retry(
+            outcome, token = attempt_with_auth_retry(
                 args=args,
                 session=session,
                 token=token,
@@ -1611,8 +1672,10 @@ def main() -> int:
                 do_validate=args.validate,
                 do_book=args.book,
             )
-            if done:
+            if outcome in {OUTCOME_BOOKED, OUTCOME_DRY_RUN_DONE}:
                 return 0
+            if outcome == OUTCOME_FULL:
+                return 1
         except ApiError as exc:
             print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR {exc}", file=sys.stderr, flush=True)
         except KeyboardInterrupt:
