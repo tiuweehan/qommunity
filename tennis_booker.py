@@ -48,6 +48,7 @@ OUTCOME_RETRY = "retry"
 OUTCOME_BOOKED = "booked"
 OUTCOME_DRY_RUN_DONE = "dry_run_done"
 OUTCOME_FULL = "full"
+OUTCOME_AMBIGUOUS_CONFIRM = "ambiguous_confirm"
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -198,6 +199,13 @@ def facility_url(facility_id: str, booking_date: str) -> str:
 
 def booking_url(booking_id: str) -> str:
     return f"{API_BASE}/portfolio/{PROPERTY_ID}/unit/{UNIT_ID}/booking/{booking_id}"
+
+
+def booking_list_url(status: str = "Upcoming", page_number: int = 1, page_size: int = 1) -> str:
+    return (
+        f"{API_BASE}/portfolio/{PROPERTY_ID}/unit/{UNIT_ID}/booking"
+        f"?pageNumber={page_number}&status={status}&subStatus=&startDate=&endDate=&pageSize={page_size}"
+    )
 
 
 def facility_list_url() -> str:
@@ -808,6 +816,37 @@ def cancel_booking(session: requests.Session, booking_id: str, reason: str) -> d
     return request_json(session, "POST", f"{booking_url(booking_id)}/cancel", json={"reason": reason})
 
 
+def slot_matches(slot: dict[str, Any], start_time: str, end_time: str) -> bool:
+    return slot.get("startTime") == start_time and slot.get("endTime") == end_time
+
+
+def find_matching_upcoming_booking(
+    session: requests.Session,
+    facility_id: str,
+    booking_date: str,
+    start_time: str,
+    end_time: str,
+) -> dict[str, Any] | None:
+    for page in range(1, int(os.environ.get("QOMMUNITY_UPCOMING_SCAN_MAX_PAGES", "50")) + 1):
+        data = request_json(session, "GET", booking_list_url(page_number=page, page_size=1))
+        page_data = data.get("paginatedList") or {}
+        items = page_data.get("items") or []
+        if not items:
+            return None
+        item = items[0]
+        if (
+            item.get("facilityId") == facility_id
+            and item.get("bookingDate") == booking_date
+            and any(slot_matches(slot, start_time, end_time) for slot in item.get("timeSlots") or [])
+            and str(item.get("bookingStatus") or "").lower() in {"booked", "onhold", "pending"}
+        ):
+            return item
+        total_pages = int(page_data.get("totalPages") or 0)
+        if total_pages and page >= total_pages:
+            return None
+    return None
+
+
 def fetch_facilities(session: requests.Session) -> dict[str, Any]:
     return request_json(session, "GET", facility_list_url())
 
@@ -1175,6 +1214,24 @@ def attempt_once(
         f"slot_id={slot_id} payment_method={payment_method}",
         flush=True,
     )
+    if os.environ.get("QOMMUNITY_PRE_CONFIRM_EXISTING_CHECK", "").lower() in {"1", "true", "yes"}:
+        existing = find_matching_upcoming_booking(
+            session,
+            facility_id=facility_id,
+            booking_date=booking_date,
+            start_time=slot["startTime"],
+            end_time=slot["endTime"],
+        )
+        if existing:
+            print(
+                colorize("Existing booking found before confirm", Style.YELLOW, use_color)
+                + f" booking_id={existing.get('id')} status={existing.get('bookingStatus')} "
+                f"facility={existing.get('facilityName')} date={existing.get('bookingDate')} "
+                f"slot={slot['startTime']}-{slot['endTime']}",
+                flush=True,
+            )
+            return OUTCOME_BOOKED
+
     try:
         result = confirm_booking(session, booking_date, facility_id, slot_id, payment_method)
     except requests.RequestException as exc:
@@ -1184,6 +1241,20 @@ def attempt_once(
             f"error={type(exc).__name__}: {exc}",
             flush=True,
         )
+        existing = find_matching_upcoming_booking(
+            session,
+            facility_id=facility_id,
+            booking_date=booking_date,
+            start_time=slot["startTime"],
+            end_time=slot["endTime"],
+        )
+        if existing:
+            print(
+                colorize("Booking confirm timeout resolved by upcoming booking", Style.YELLOW, use_color)
+                + f" booking_id={existing.get('id')} status={existing.get('bookingStatus')}",
+                flush=True,
+            )
+            return OUTCOME_BOOKED
         recheck = request_json(session, "GET", facility_url(facility_id, booking_date))
         recheck_day = get_date_entry(recheck, booking_date)
         outcome, reason = classify_unavailable(recheck_day, preferred_starts)
@@ -1202,7 +1273,12 @@ def attempt_once(
                 flush=True,
             )
             return OUTCOME_BOOKED
-        return outcome
+        print(
+            colorize("Booking confirm outcome ambiguous; not retrying confirm", Style.RED, use_color)
+            + f" outcome={outcome} reason={reason}",
+            flush=True,
+        )
+        return OUTCOME_AMBIGUOUS_CONFIRM
     except ApiError as exc:
         if exc.status_code != 422:
             raise
@@ -1212,6 +1288,20 @@ def attempt_once(
             f"status={exc.status_code} body={exc.body}",
             flush=True,
         )
+        existing = find_matching_upcoming_booking(
+            session,
+            facility_id=facility_id,
+            booking_date=booking_date,
+            start_time=slot["startTime"],
+            end_time=slot["endTime"],
+        )
+        if existing:
+            print(
+                colorize("Booking confirm rejection resolved by upcoming booking", Style.YELLOW, use_color)
+                + f" booking_id={existing.get('id')} status={existing.get('bookingStatus')}",
+                flush=True,
+            )
+            return OUTCOME_BOOKED
         recheck = request_json(session, "GET", facility_url(facility_id, booking_date))
         recheck_day = get_date_entry(recheck, booking_date)
         outcome, reason = classify_unavailable(recheck_day, preferred_starts)
@@ -1479,6 +1569,15 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                         flush=True,
                     )
                     break
+                if outcome == OUTCOME_AMBIGUOUS_CONFIRM:
+                    failures += 1
+                    failure_reason = "confirm request outcome ambiguous; not retried to avoid duplicate booking"
+                    print(
+                        colorize("Job terminal failure", Style.RED, use_color)
+                        + f" job={job['name']} date={job['date']} attempts={attempts} outcome={outcome}",
+                        flush=True,
+                    )
+                    break
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
@@ -1702,7 +1801,7 @@ def main() -> int:
             )
             if outcome in {OUTCOME_BOOKED, OUTCOME_DRY_RUN_DONE}:
                 return 0
-            if outcome == OUTCOME_FULL:
+            if outcome in {OUTCOME_FULL, OUTCOME_AMBIGUOUS_CONFIRM}:
                 return 1
         except ApiError as exc:
             print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR {exc}", file=sys.stderr, flush=True)
