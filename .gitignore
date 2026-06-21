@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 MITM_README.md
 cloudflare/wrangler.toml
+cloudflare/.wrangler/
