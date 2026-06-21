@@ -10,6 +10,7 @@ booking_base_config.json         shared scheduler defaults
 facilities.json                  facility keys and IDs
 sunday_8am_bookings_10y.json     actual booking requests
 qommunity_auth.json              saved OTP login response and Bearer token, mode 600
+auth_config.json                 local ignored OTP login contact config
 tennis_booker.log                default stdout/stderr log file
 ```
 
@@ -96,12 +97,15 @@ Token expiry and token reloads
 --auth-file PATH
   Saved auth JSON. Default: qommunity_auth.json. Used before --flow-file when present.
 
+--auth-config PATH
+  Auth config JSON. Defaults to auth_config.json, then --config or booking_base_config.json.
+
 --login
   Send an OTP to the configured contact, prompt for the OTP, exchange it for a Bearer token,
   save --auth-file with mode 600, then exit.
 
 --auth-contact VALUE
-  Login contact. Default is the captured mobile number.
+  Login contact. Can also be set with QOMMUNITY_AUTH_CONTACT or auth.contact in auth_config.json.
 
 --auth-mobile-country-code VALUE
   Login mobile country code. Default: +65.
@@ -336,6 +340,31 @@ Generate a fresh auth file without MITM:
 
 ```bash
 ~/venv/bin/python tennis_booker.py --login
+```
+
+By default, `--login` reads contact settings from:
+
+```text
+auth_config.json
+```
+
+That file is ignored by git. Shape:
+
+```json
+{
+  "auth": {
+    "contactType": "1",
+    "contact": "85331217",
+    "mobileCountryCode": "+65",
+    "client_id": "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase"
+  }
+}
+```
+
+Override the config path if needed:
+
+```bash
+~/venv/bin/python tennis_booker.py --login --auth-config ~/.qommunity_auth_config.json
 ```
 
 The CLI calls:

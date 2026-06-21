@@ -29,6 +29,8 @@ UNIT_ID = "9779247a-b08f-4b7b-b497-fd5b65119a6a"
 TENNIS_COURT_3_ID = "55868819-d547-4ac5-be87-6882310b90de"
 DEFAULT_FLOW_FILE = "/tmp/qommunity-ipmitm-flows.mitm"
 DEFAULT_AUTH_FILE = "qommunity_auth.json"
+DEFAULT_AUTH_CONFIG_FILE = "auth_config.json"
+DEFAULT_BASE_CONFIG_FILE = "booking_base_config.json"
 DEFAULT_CLIENT_ID = "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase"
 DEFAULT_PREFERRED_STARTS = ("08:00:00", "07:00:00")
 TOKEN_REFRESH_SKEW_SECONDS = 300
@@ -198,6 +200,57 @@ def auth_payload(args: argparse.Namespace, otp: str | None = None) -> dict[str, 
     return payload
 
 
+def auth_config_candidates(args: argparse.Namespace) -> list[Path]:
+    candidates = []
+    if args.auth_config:
+        candidates.append(Path(args.auth_config))
+    else:
+        candidates.append(Path(DEFAULT_AUTH_CONFIG_FILE))
+        if args.config:
+            candidates.append(Path(args.config))
+        else:
+            candidates.append(Path(DEFAULT_BASE_CONFIG_FILE))
+    return candidates
+
+
+def auth_config_from_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    data = load_config(str(path))
+    auth = data.get("auth")
+    if isinstance(auth, dict):
+        return auth
+    defaults = data.get("defaults")
+    if isinstance(defaults, dict) and isinstance(defaults.get("auth"), dict):
+        return defaults["auth"]
+    return {}
+
+
+def apply_auth_config(args: argparse.Namespace) -> None:
+    merged: dict[str, Any] = {}
+    loaded_paths = []
+    for path in auth_config_candidates(args):
+        auth = auth_config_from_file(path)
+        if auth:
+            merged.update(auth)
+            loaded_paths.append(str(path))
+
+    if not args.auth_contact:
+        args.auth_contact = str(merged.get("contact") or merged.get("auth_contact") or "")
+    if args.auth_mobile_country_code == "+65" and (merged.get("mobileCountryCode") or merged.get("mobile_country_code")):
+        args.auth_mobile_country_code = str(merged.get("mobileCountryCode") or merged.get("mobile_country_code"))
+    if args.auth_contact_type == "1" and (merged.get("contactType") or merged.get("contact_type")):
+        args.auth_contact_type = str(merged.get("contactType") or merged.get("contact_type"))
+    if args.auth_client_id == DEFAULT_CLIENT_ID and (merged.get("client_id") or merged.get("clientId")):
+        args.auth_client_id = str(merged.get("client_id") or merged.get("clientId"))
+    if loaded_paths:
+        print(
+            colorize("Loaded auth config", Style.CYAN, not args.no_color)
+            + f" paths={loaded_paths}",
+            flush=True,
+        )
+
+
 def extract_auth_token(auth_data: dict[str, Any]) -> str:
     login_output = auth_data.get("loginOTPOutput")
     if isinstance(login_output, dict):
@@ -239,8 +292,11 @@ def write_auth_file(path: str, auth_data: dict[str, Any], token: str) -> None:
 
 
 def run_login(args: argparse.Namespace) -> int:
+    apply_auth_config(args)
     if not args.auth_contact:
-        raise SystemExit("Login requires --auth-contact or QOMMUNITY_AUTH_CONTACT")
+        raise SystemExit(
+            "Login requires --auth-contact, QOMMUNITY_AUTH_CONTACT, or auth.contact in auth_config.json"
+        )
     session = make_base_session()
     session.no_color = args.no_color
     print(
@@ -1045,6 +1101,11 @@ def main() -> int:
     parser.add_argument("--date", help="Booking date, e.g. 2026-07-26")
     parser.add_argument("--flow-file", default=DEFAULT_FLOW_FILE)
     parser.add_argument("--auth-file", default=DEFAULT_AUTH_FILE, help="Saved auth JSON. Used before --flow-file when present.")
+    parser.add_argument(
+        "--auth-config",
+        default="",
+        help="Auth config JSON. Defaults to auth_config.json, then --config or booking_base_config.json.",
+    )
     parser.add_argument("--login", action="store_true", help="Request OTP, exchange it for a Bearer token, save --auth-file, then exit.")
     parser.add_argument(
         "--auth-contact",
