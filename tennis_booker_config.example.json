@@ -1,0 +1,25 @@
+{
+  "defaults": {
+    "advance_days": 30,
+    "open_time": "00:00:00",
+    "lead_seconds": 1,
+    "interval": 0.2,
+    "max_attempts": 0,
+    "payment_method": "EstateCredit",
+    "validate": true,
+    "book": false
+  },
+  "facilities": [
+    {
+      "name": "Tennis Court 3",
+      "facility_id": "55868819-d547-4ac5-be87-6882310b90de",
+      "dates": [
+        "2026-07-26"
+      ],
+      "preferred_starts": [
+        "08:00:00",
+        "07:00:00"
+      ]
+    }
+  ]
+}

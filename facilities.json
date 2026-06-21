@@ -1,0 +1,94 @@
+{
+  "facilities": [
+    {
+      "key": "bbq_pit_1a",
+      "name": "BBQ PIT 1A",
+      "facility_id": "a3c0d3b1-2639-420f-a28d-b9c51ab6e1b8",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_1b",
+      "name": "BBQ PIT 1B",
+      "facility_id": "0d81ebd3-6f67-4fef-9c7e-37a4bba215f8",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_2a",
+      "name": "BBQ PIT 2A",
+      "facility_id": "708473ed-6f26-4cd7-bb1a-da5a1fcfda77",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_2b",
+      "name": "BBQ PIT 2B",
+      "facility_id": "1aee203e-62b0-48c4-8b22-2f824f1910ba",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_3a",
+      "name": "BBQ PIT 3A",
+      "facility_id": "4fd7e187-2630-4525-ac05-ab73a1193435",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_3b",
+      "name": "BBQ PIT 3B",
+      "facility_id": "b1a2a470-7b7e-4580-bb5b-8c2bb6d1a599",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_4a",
+      "name": "BBQ PIT 4A",
+      "facility_id": "08f1f36b-a52e-4b03-b010-72da8fa0f433",
+      "category": "d"
+    },
+    {
+      "key": "bbq_pit_4b",
+      "name": "BBQ PIT 4B",
+      "facility_id": "d7e9eca7-c44c-4c2a-bab4-3464c4837b10",
+      "category": "d"
+    },
+    {
+      "key": "club_room_1",
+      "name": "CLUB ROOM 1",
+      "facility_id": "9f023e9c-cc35-4c51-8ce2-c11a6cb75b14",
+      "category": "c"
+    },
+    {
+      "key": "club_room_2",
+      "name": "CLUB ROOM 2",
+      "facility_id": "08578fec-7d7a-43d4-b02d-dc1f110add07",
+      "category": "c"
+    },
+    {
+      "key": "squash_court_1",
+      "name": "Squash Court 1",
+      "facility_id": "84d24ec0-f11e-4c62-84cb-dde75705edb0",
+      "category": "b"
+    },
+    {
+      "key": "squash_court_2",
+      "name": "Squash Court 2",
+      "facility_id": "4014d9da-e5a8-45f2-8724-953774fcca0e",
+      "category": "b"
+    },
+    {
+      "key": "tennis_court_1",
+      "name": "Tennis Court 1",
+      "facility_id": "cface7d7-74e8-4301-ac32-d5c70ca43ce8",
+      "category": "a"
+    },
+    {
+      "key": "tennis_court_2",
+      "name": "Tennis Court 2",
+      "facility_id": "bf330ef5-0191-405a-8416-61d88c22c9a2",
+      "category": "a"
+    },
+    {
+      "key": "tennis_court_3",
+      "name": "Tennis Court 3",
+      "facility_id": "55868819-d547-4ac5-be87-6882310b90de",
+      "category": "a"
+    }
+  ]
+}

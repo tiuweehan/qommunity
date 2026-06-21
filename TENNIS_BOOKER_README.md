@@ -1,0 +1,425 @@
+# Qommunity Facility Booker
+
+This documents `tennis_booker.py`, the CLI used to list facilities, query availability, book slots, cancel bookings, and run a long-lived scheduler.
+
+## Files
+
+```text
+tennis_booker.py                 CLI script
+booking_base_config.json         shared scheduler defaults
+facilities.json                  facility keys and IDs
+sunday_8am_bookings_10y.json     actual booking requests
+qommunity_auth.json              saved OTP login response and Bearer token, mode 600
+tennis_booker.log                default stdout/stderr log file
+```
+
+After CLI login, the script uses the saved Bearer token from:
+
+```text
+qommunity_auth.json
+```
+
+If that file does not exist, the script falls back to the latest captured Bearer token from:
+
+```text
+/tmp/qommunity-ipmitm-flows.mitm
+```
+
+Run commands with:
+
+```bash
+~/venv/bin/python tennis_booker.py ...
+```
+
+## Output And Logging
+
+By default, stdout/stderr are shown in the terminal and mirrored to:
+
+```text
+tennis_booker.log
+```
+
+Terminal output is colored. The log file is plain text with ANSI color codes stripped.
+
+Options:
+
+```bash
+--log-file tennis_booker.log
+--log-file ""          # disable file logging
+--no-color             # disable terminal color
+```
+
+The CLI logs:
+
+```text
+Countdown timing
+Poll attempt start
+Request sent timestamp
+Response status, elapsed_ms, byte count
+Availability summary
+Validation start/end
+Booking confirmation start/end
+Cancellation/status fetches
+Token expiry and token reloads
+```
+
+## CLI Reference
+
+```text
+--config PATH
+  Base scheduler config. Usually booking_base_config.json.
+
+--facilities-config PATH
+  Facility definitions. Usually facilities.json.
+
+--bookings-config PATH
+  Booking request list. Usually sunday_8am_bookings_10y.json.
+
+--list-facilities
+  Fetch available facilities from the API and print local key, ID, name, and category.
+
+--write-facilities-config PATH
+  Fetch available facilities and write a normalized facilities[] JSON config.
+
+--log-file PATH
+  Mirror stdout/stderr to a file. Default: tennis_booker.log. Use "" to disable.
+
+--no-color
+  Disable ANSI colors in terminal output. Logs are always written without ANSI codes.
+
+--date YYYY-MM-DD
+  One-off availability/booking date.
+
+--flow-file PATH
+  mitmproxy flow file used to extract the latest Bearer token. Default: /tmp/qommunity-ipmitm-flows.mitm.
+
+--auth-file PATH
+  Saved auth JSON. Default: qommunity_auth.json. Used before --flow-file when present.
+
+--login
+  Send an OTP to the configured contact, prompt for the OTP, exchange it for a Bearer token,
+  save --auth-file with mode 600, then exit.
+
+--auth-contact VALUE
+  Login contact. Default is the captured mobile number.
+
+--auth-mobile-country-code VALUE
+  Login mobile country code. Default: +65.
+
+--auth-contact-type VALUE
+  Qommunity login contactType. Captured mobile login uses 1.
+
+--auth-client-id VALUE
+  Qommunity client_id. Defaults to the captured app client ID.
+
+--auth-accept-tc / --no-auth-accept-tc
+  Whether to send TCAccepted=true during token generation. Default: true.
+
+--otp VALUE
+  OTP value for --login. If omitted, the CLI prompts interactively.
+
+--token TOKEN
+  Use a fixed Bearer token instead of qommunity_auth.json or the flow file.
+
+--token-refresh-skew SECONDS
+  Reload captured token this many seconds before expiry. Default: 300. Use 0 to disable.
+
+--facility-id UUID
+  One-off mode facility ID. Default is Tennis Court 3.
+
+--payment-method METHOD
+  Payment method for confirmation. Default: EstateCredit.
+
+--preferred-start HH:MM:SS
+  One-off preferred start time. Repeat to add fallbacks in priority order.
+
+--validate
+  Send validation POST when a slot is available.
+
+--book
+  Actually confirm bookings. Without this, scheduler config stays dry-run unless book=true in config.
+
+--show-booking-id UUID
+  Fetch and print a booking by ID.
+
+--cancel-booking-id UUID
+  Cancel a booking by ID, then fetch it again to confirm status.
+
+--cancel-reason TEXT
+  Cancellation reason. Default: Wrong timing.
+
+--watch
+  Keep polling in one-off mode until booked/found or max attempts is reached.
+
+--interval SECONDS
+  Poll interval for one-off watch mode. Scheduler uses config interval.
+
+--max-attempts N
+  Max attempts for one-off watch mode. 0 means unlimited.
+
+--wait-until ISO_TIMESTAMP
+  Wait until a timestamp before starting one-off mode.
+```
+
+## Config Files
+
+`booking_base_config.json` contains reusable defaults:
+
+```json
+{
+  "defaults": {
+    "advance_days": 30,
+    "open_time": "00:00:00",
+    "lead_seconds": 1,
+    "interval": 0.2,
+    "max_attempts": 0,
+    "payment_method": "EstateCredit",
+    "validate": true,
+    "book": false
+  }
+}
+```
+
+`facilities.json` maps stable local keys to API facility IDs:
+
+```json
+{
+  "facilities": [
+    {
+      "key": "tennis_court_3",
+      "name": "Tennis Court 3",
+      "facility_id": "55868819-d547-4ac5-be87-6882310b90de",
+      "category": "a"
+    }
+  ]
+}
+```
+
+`sunday_8am_bookings_10y.json` contains actual booking requests:
+
+```json
+{
+  "bookings": [
+    {
+      "facility": "tennis_court_3",
+      "date": "2026-07-26",
+      "preferred_starts": ["08:00:00"]
+    }
+  ]
+}
+```
+
+`preferred_starts` is ordered. The script chooses the first available timing in the list.
+
+## Long-Running Scheduler
+
+Dry run:
+
+```bash
+caffeinate -dimsu ~/venv/bin/python tennis_booker.py \
+  --config booking_base_config.json \
+  --facilities-config facilities.json \
+  --bookings-config sunday_8am_bookings_10y.json
+```
+
+Live booking:
+
+```bash
+caffeinate -dimsu ~/venv/bin/python tennis_booker.py \
+  --config booking_base_config.json \
+  --facilities-config facilities.json \
+  --bookings-config sunday_8am_bookings_10y.json \
+  --book
+```
+
+Scheduling behavior:
+
+```text
+open_at  = booking date minus advance_days, at open_time
+start_at = open_at minus lead_seconds
+```
+
+With current defaults, a `2026-07-26` booking opens at:
+
+```text
+2026-06-26 00:00:00 +08:00
+```
+
+The script starts probing at:
+
+```text
+2026-06-25 23:59:59 +08:00
+```
+
+Countdown cadence:
+
+```text
+Every day until 1 day before
+Every hour until 1 hour before
+Every minute until 1 minute before
+Every second until 1 second before
+Then sleeps silently to the probe start
+```
+
+Past entries are skipped automatically. A job is considered past when its calculated `open_at` is already before the current time. With `advance_days: 30`, this means entries already inside their 30-day release window are skipped instead of being polled late.
+
+## Facility Listing
+
+The facility list endpoint is:
+
+```text
+GET /api/v1.0/portfolio/{propertyId}/unit/{unitId}/facility
+```
+
+Print facilities:
+
+```bash
+~/venv/bin/python tennis_booker.py --list-facilities
+```
+
+Refresh `facilities.json`:
+
+```bash
+~/venv/bin/python tennis_booker.py --write-facilities-config facilities.json
+```
+
+Current known useful key:
+
+```text
+tennis_court_3  55868819-d547-4ac5-be87-6882310b90de
+```
+
+## One-Off Availability Query
+
+Check Tennis Court 3 for a date/time without booking:
+
+```bash
+~/venv/bin/python tennis_booker.py \
+  --date 2026-07-26 \
+  --preferred-start 08:00:00
+```
+
+Watch repeatedly:
+
+```bash
+~/venv/bin/python tennis_booker.py \
+  --date 2026-07-26 \
+  --preferred-start 08:00:00 \
+  --watch \
+  --interval 0.2
+```
+
+## One-Off Booking
+
+Book the first available preferred start:
+
+```bash
+~/venv/bin/python tennis_booker.py \
+  --date 2026-07-26 \
+  --preferred-start 08:00:00 \
+  --book
+```
+
+Multiple fallback timings:
+
+```bash
+~/venv/bin/python tennis_booker.py \
+  --date 2026-07-26 \
+  --preferred-start 08:00:00 \
+  --preferred-start 07:00:00 \
+  --book
+```
+
+## Auth Login
+
+Generate a fresh auth file without MITM:
+
+```bash
+~/venv/bin/python tennis_booker.py --login
+```
+
+The CLI calls:
+
+```text
+POST /api/v1.0/auth/requesttoken
+POST /api/v1.0/auth/generatetoken
+```
+
+It prompts for the OTP, then writes:
+
+```text
+qommunity_auth.json
+```
+
+The file contains the API login response, including `loginOTPOutput.accessToken` and
+`loginOTPOutput.refreshToken`, and is written with `600` permissions. Treat it as a secret.
+
+You can override the destination:
+
+```bash
+~/venv/bin/python tennis_booker.py --login --auth-file ~/.qommunity_auth.json
+```
+
+All normal booking commands automatically use `--auth-file` when it exists. If no auth file
+exists, they fall back to `--flow-file`.
+
+## Booking Status And Cancellation
+
+Fetch a booking:
+
+```bash
+~/venv/bin/python tennis_booker.py \
+  --show-booking-id <booking-id>
+```
+
+Cancel a booking:
+
+```bash
+~/venv/bin/python tennis_booker.py \
+  --cancel-booking-id <booking-id> \
+  --cancel-reason "Wrong timing"
+```
+
+The cancel command posts to:
+
+```text
+POST /api/v1.0/portfolio/{propertyId}/unit/{unitId}/booking/{bookingId}/cancel
+```
+
+Then it fetches the booking again and exits `0` only if status is `Cancelled`.
+
+## Token Handling
+
+The script cannot forge or extend JWT expiry. It uses legitimate tokens from either CLI OTP login
+or the MITM flow file.
+
+Token behavior:
+
+```text
+If --token is passed, that token is fixed.
+Otherwise, if --auth-file exists, the script uses loginOTPOutput.accessToken from that file.
+Otherwise, the script extracts the latest token from the flow file.
+During long runs using the flow file, it reloads the token before expiry.
+If the API returns 401 while using the flow file, it reloads once and retries the request.
+```
+
+Refresh auth before a long scheduled run with `--login`. MITM is now only needed as a fallback.
+
+## Exit Codes
+
+```text
+0  Success, dry-run slot found, booking confirmed, cancellation confirmed, or facility command completed
+1  One-shot poll did not find an available slot, or cancellation did not end as Cancelled
+2  Watch/scheduler reached max attempts
+```
+
+## Current Live Scheduler Command
+
+```bash
+caffeinate -dimsu ~/venv/bin/python tennis_booker.py \
+  --config booking_base_config.json \
+  --facilities-config facilities.json \
+  --bookings-config sunday_8am_bookings_10y.json \
+  --book \
+  --log-file tennis_booker.log
+```
