@@ -42,6 +42,7 @@ DEFAULT_ADVANCE_DAYS = 30
 DEFAULT_OPEN_TIME = "00:00:00"
 DEFAULT_LEAD_SECONDS = 1.0
 DEFAULT_LOG_FILE = "tennis_booker.log"
+DEFAULT_OTP_REGEX = r"\b\d{4,8}\b"
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -296,6 +297,114 @@ def apply_auth_config(args: argparse.Namespace) -> None:
         )
 
 
+def load_otp_config(args: argparse.Namespace) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for path in auth_config_candidates(args):
+        if not path.exists():
+            continue
+        data = load_config(str(path))
+        otp_config = data.get("otp")
+        if isinstance(otp_config, dict):
+            merged.update(otp_config)
+        auth = data.get("auth")
+        if isinstance(auth, dict) and isinstance(auth.get("otp"), dict):
+            merged.update(auth["otp"])
+    return merged
+
+
+def expand_user_path(value: str) -> str:
+    return str(Path(value).expanduser()) if value else ""
+
+
+def read_secret(value: str, file_value: str) -> str:
+    if value:
+        return value.strip()
+    path = expand_user_path(file_value)
+    if not path:
+        return ""
+    return Path(path).read_text().strip()
+
+
+def apply_otp_config(args: argparse.Namespace) -> None:
+    config = load_otp_config(args)
+    if not args.otp_source:
+        args.otp_source = str(config.get("source") or "prompt")
+    if not args.otp_worker_url:
+        args.otp_worker_url = str(config.get("worker_url") or config.get("url") or "")
+    if not args.otp_secret_file:
+        args.otp_secret_file = str(config.get("secret_file") or "")
+    if not args.otp_secret:
+        args.otp_secret = str(config.get("secret") or "")
+    if args.otp_timeout_seconds is None:
+        args.otp_timeout_seconds = int(config.get("timeout_seconds", 180))
+    if args.otp_poll_interval is None:
+        args.otp_poll_interval = float(config.get("poll_interval", 2.0))
+    if not args.otp_regex:
+        args.otp_regex = str(config.get("regex") or DEFAULT_OTP_REGEX)
+
+
+def poll_worker_otp(args: argparse.Namespace, requested_at: dt.datetime) -> str:
+    if not args.otp_worker_url:
+        raise SystemExit("OTP worker source requires otp.worker_url in auth_config.json or --otp-worker-url")
+    secret = read_secret(args.otp_secret, args.otp_secret_file)
+    if not secret:
+        raise SystemExit("OTP worker source requires otp.secret_file/otp.secret or --otp-secret-file/--otp-secret")
+
+    session = make_base_session()
+    session.no_color = args.no_color
+    deadline = time.monotonic() + float(args.otp_timeout_seconds)
+    pattern = re.compile(args.otp_regex)
+    after = int(requested_at.timestamp())
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        print(
+            colorize("OTP poll start", Style.BLUE, not args.no_color)
+            + f" source=worker attempt={attempt} url={args.otp_worker_url}",
+            flush=True,
+        )
+        try:
+            response = session.get(
+                args.otp_worker_url,
+                params={"after": after, "contact": args.auth_contact, "mode": args.login},
+                headers={"authorization": f"Bearer {secret}"},
+                timeout=10,
+            )
+            if response.status_code == 200:
+                body = response.json()
+                candidate = str(body.get("otp") or "")
+                if candidate and pattern.search(candidate):
+                    print(
+                        colorize("OTP received", Style.GREEN, not args.no_color)
+                        + f" source=worker attempt={attempt} received_at={body.get('receivedAt', '')}",
+                        flush=True,
+                    )
+                    return candidate
+            elif response.status_code not in {202, 204, 404}:
+                print(
+                    colorize("OTP poll unexpected response", Style.YELLOW, not args.no_color)
+                    + f" status={response.status_code} body={response.text[:300]!r}",
+                    flush=True,
+                )
+        except requests.RequestException as exc:
+            print(
+                colorize("OTP poll failed", Style.YELLOW, not args.no_color)
+                + f" attempt={attempt} error={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        time.sleep(float(args.otp_poll_interval))
+    raise SystemExit(f"Timed out waiting for OTP from worker after {args.otp_timeout_seconds}s")
+
+
+def obtain_otp(args: argparse.Namespace, requested_at: dt.datetime) -> str:
+    if args.otp:
+        return args.otp.strip()
+    apply_otp_config(args)
+    if args.otp_source == "worker":
+        return poll_worker_otp(args, requested_at)
+    return input("Enter OTP: ").strip()
+
+
 def extract_auth_token(auth_data: dict[str, Any]) -> str:
     login_output = auth_data.get("loginOTPOutput")
     if isinstance(login_output, dict):
@@ -350,6 +459,7 @@ def run_login(args: argparse.Namespace) -> int:
         f"{' mobile_country_code=' + args.auth_mobile_country_code if args.auth_mobile_country_code else ''}",
         flush=True,
     )
+    otp_requested_at = dt.datetime.now().astimezone()
     request_result = request_json(session, "POST", auth_url("requesttoken"), json=auth_payload(args))
     print(
         colorize("Auth OTP request sent", Style.GREEN, not args.no_color)
@@ -357,7 +467,7 @@ def run_login(args: argparse.Namespace) -> int:
         flush=True,
     )
 
-    otp = args.otp.strip() if args.otp else input("Enter OTP: ").strip()
+    otp = obtain_otp(args, otp_requested_at)
     if not otp:
         raise SystemExit("OTP is required")
 
@@ -1169,6 +1279,13 @@ def main() -> int:
     parser.add_argument("--auth-client-id", default=DEFAULT_CLIENT_ID, help="Qommunity client_id used for OTP login.")
     parser.add_argument("--auth-accept-tc", action=argparse.BooleanOptionalAction, default=True, help="Send TCAccepted=true during token generation.")
     parser.add_argument("--otp", default="", help="OTP value. If omitted with --login, prompt interactively.")
+    parser.add_argument("--otp-source", choices=("prompt", "worker"), default="", help="OTP source. Defaults to otp.source in auth_config.json, else prompt.")
+    parser.add_argument("--otp-worker-url", default=os.environ.get("QOMMUNITY_OTP_WORKER_URL", ""), help="Secret-protected Worker URL used by --otp-source worker.")
+    parser.add_argument("--otp-secret", default=os.environ.get("QOMMUNITY_OTP_SECRET", ""), help="Worker read secret. Prefer --otp-secret-file.")
+    parser.add_argument("--otp-secret-file", default=os.environ.get("QOMMUNITY_OTP_SECRET_FILE", ""), help="File containing the Worker read secret.")
+    parser.add_argument("--otp-timeout-seconds", type=int, default=None, help="Seconds to wait for Worker OTP. Default: 180.")
+    parser.add_argument("--otp-poll-interval", type=float, default=None, help="Seconds between Worker OTP polls. Default: 2.")
+    parser.add_argument("--otp-regex", default="", help=f"OTP regex. Default: {DEFAULT_OTP_REGEX}")
     parser.add_argument("--token", default="", help="Bearer token. Defaults to --auth-file when present, else latest token from flow file.")
     parser.add_argument(
         "--token-refresh-skew",

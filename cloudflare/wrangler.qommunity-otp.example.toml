@@ -1,0 +1,19 @@
+name = "qommunity-otp"
+main = "qommunity-otp-worker.js"
+compatibility_date = "2026-06-21"
+
+[[kv_namespaces]]
+binding = "OTP_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+TELEGRAM_CHAT_ID = "REPLACE_WITH_TELEGRAM_CHAT_ID"
+OTP_REGEX = "\\b\\d{4,8}\\b"
+OTP_TTL_SECONDS = "600"
+TELEGRAM_NOTIFY_NO_OTP = "false"
+# Optional: keep a backup copy of forwarded OTP emails.
+# FORWARD_TO = "your-backup@gmail.com"
+
+# Set these as secrets, not vars:
+# wrangler secret put TELEGRAM_TOKEN
+# wrangler secret put OTP_READ_SECRET

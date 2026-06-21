@@ -123,6 +123,18 @@ Token expiry and token reloads
 --otp VALUE
   OTP value for --login. If omitted, the CLI prompts interactively.
 
+--otp-source prompt|worker
+  OTP source for --login. Defaults to otp.source in auth_config.json, else prompt.
+
+--otp-worker-url URL
+  Secret-protected Cloudflare Worker /otp endpoint used by --otp-source worker.
+
+--otp-secret-file PATH
+  File containing the Worker read secret. Prefer this over --otp-secret.
+
+--otp-timeout-seconds N
+  Seconds to wait for Worker OTP. Default: 180.
+
 --token TOKEN
   Use a fixed Bearer token instead of qommunity_auth.json or the flow file.
 
@@ -389,6 +401,8 @@ The CLI calls:
 POST /api/v1.0/auth/requesttoken
 POST /api/v1.0/auth/generatetoken
 ```
+
+For automated email OTP, see `OTP_AUTOMATION.md`.
 
 It prompts for the OTP, then writes:
 
