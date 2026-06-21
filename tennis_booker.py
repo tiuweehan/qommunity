@@ -112,6 +112,71 @@ def setup_output_logging(log_file: str, no_color: bool) -> None:
     print(colorize(f"Logging stdout/stderr to {path}", Style.GRAY, not no_color), flush=True)
 
 
+def telegram_enabled() -> bool:
+    return bool(os.environ.get("QOMMUNITY_TELEGRAM_TOKEN"))
+
+
+def telegram_chat_id(kind: str) -> str:
+    key = "QOMMUNITY_TELEGRAM_BOOKING_CHAT_ID" if kind == "booking" else "QOMMUNITY_TELEGRAM_DEBUG_CHAT_ID"
+    return os.environ.get(key, "")
+
+
+def notify_telegram(kind: str, text: str, no_color: bool = False) -> None:
+    token = os.environ.get("QOMMUNITY_TELEGRAM_TOKEN", "")
+    chat_id = telegram_chat_id(kind)
+    if not token or not chat_id:
+        return
+    started = time.monotonic()
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        elapsed_ms = (time.monotonic() - started) * 1000
+        if response.ok:
+            print(
+                colorize("Telegram notify sent", Style.CYAN, not no_color)
+                + f" kind={kind} chat_id={chat_id} elapsed_ms={elapsed_ms:.1f}",
+                flush=True,
+            )
+        else:
+            print(
+                colorize("Telegram notify failed", Style.YELLOW, not no_color)
+                + f" kind={kind} chat_id={chat_id} status={response.status_code} body={response.text[:300]!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+    except requests.RequestException as exc:
+        print(
+            colorize("Telegram notify failed", Style.YELLOW, not no_color)
+            + f" kind={kind} chat_id={chat_id} error={type(exc).__name__}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def format_job_message(prefix: str, job: dict[str, Any], attempts: int | None = None, extra: str = "") -> str:
+    lines = [
+        prefix,
+        f"facility: {job['name']}",
+        f"date: {job['date']}",
+        f"preferred: {', '.join(job['preferred_starts'])}",
+        f"open_at: {job['open_at'].isoformat(timespec='seconds')}",
+        f"start_at: {job['start_at'].isoformat(timespec='seconds')}",
+        f"book: {job['book']}",
+    ]
+    if attempts is not None:
+        lines.append(f"attempts: {attempts}")
+    if extra:
+        lines.append(extra)
+    return "\n".join(lines)
+
+
 class ApiError(RuntimeError):
     def __init__(self, message: str, status_code: int, body: Any):
         super().__init__(message)
@@ -475,38 +540,78 @@ def run_login(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"Login {args.login} requires --auth-contact, QOMMUNITY_AUTH_CONTACT, or auth.{args.login}.contact in auth_config.json"
         )
+    notify_telegram(
+        "debug",
+        "\n".join(
+            [
+                "OTP login started",
+                f"mode: {args.login}",
+                f"contact: {args.auth_contact}",
+                f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+            ]
+        ),
+        args.no_color,
+    )
     session = make_base_session()
     session.no_color = args.no_color
-    print(
-        colorize("Auth OTP request start", Style.BLUE, not args.no_color)
-        + f" mode={args.login} contact_type={args.auth_contact_type} contact={args.auth_contact}"
-        f"{' mobile_country_code=' + args.auth_mobile_country_code if args.auth_mobile_country_code else ''}",
-        flush=True,
-    )
-    otp_requested_at = dt.datetime.now().astimezone()
-    request_result = request_json(session, "POST", auth_url("requesttoken"), json=auth_payload(args))
-    print(
-        colorize("Auth OTP request sent", Style.GREEN, not args.no_color)
-        + f" userName={request_result.get('userName')} userId={request_result.get('userId')}",
-        flush=True,
-    )
+    try:
+        print(
+            colorize("Auth OTP request start", Style.BLUE, not args.no_color)
+            + f" mode={args.login} contact_type={args.auth_contact_type} contact={args.auth_contact}"
+            f"{' mobile_country_code=' + args.auth_mobile_country_code if args.auth_mobile_country_code else ''}",
+            flush=True,
+        )
+        otp_requested_at = dt.datetime.now().astimezone()
+        request_result = request_json(session, "POST", auth_url("requesttoken"), json=auth_payload(args))
+        print(
+            colorize("Auth OTP request sent", Style.GREEN, not args.no_color)
+            + f" userName={request_result.get('userName')} userId={request_result.get('userId')}",
+            flush=True,
+        )
 
-    otp = obtain_otp(args, otp_requested_at)
-    if not otp:
-        raise SystemExit("OTP is required")
+        otp = obtain_otp(args, otp_requested_at)
+        if not otp:
+            raise RuntimeError("OTP is required")
 
-    print(colorize("Auth token exchange start", Style.BLUE, not args.no_color), flush=True)
-    auth_data = request_json(session, "POST", auth_url("generatetoken"), json=auth_payload(args, otp=otp))
-    token = extract_auth_token(auth_data)
-    write_auth_file(args.auth_file, auth_data, token)
-    exp = token_expiry(token)
-    print(
-        colorize("Auth token saved", Style.GREEN + Style.BOLD, not args.no_color)
-        + f" path={args.auth_file} mode=600"
-        f"{' expires_at=' + exp.isoformat(timespec='seconds') if exp else ''}",
-        flush=True,
-    )
-    return 0
+        print(colorize("Auth token exchange start", Style.BLUE, not args.no_color), flush=True)
+        auth_data = request_json(session, "POST", auth_url("generatetoken"), json=auth_payload(args, otp=otp))
+        token = extract_auth_token(auth_data)
+        write_auth_file(args.auth_file, auth_data, token)
+        exp = token_expiry(token)
+        print(
+            colorize("Auth token saved", Style.GREEN + Style.BOLD, not args.no_color)
+            + f" path={args.auth_file} mode=600"
+            f"{' expires_at=' + exp.isoformat(timespec='seconds') if exp else ''}",
+            flush=True,
+        )
+        notify_telegram(
+            "debug",
+            "\n".join(
+                [
+                    "OTP login succeeded",
+                    f"mode: {args.login}",
+                    f"auth_file: {args.auth_file}",
+                    f"expires_at: {exp.isoformat(timespec='seconds') if exp else 'unknown'}",
+                    f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+                ]
+            ),
+            args.no_color,
+        )
+        return 0
+    except Exception as exc:
+        notify_telegram(
+            "debug",
+            "\n".join(
+                [
+                    "OTP login failed",
+                    f"mode: {args.login}",
+                    f"error: {type(exc).__name__}: {exc}",
+                    f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+                ]
+            ),
+            args.no_color,
+        )
+        raise
 
 
 def summarize_payload(payload: Any) -> str:
@@ -1190,6 +1295,21 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
         + f" skipped={len(skipped_jobs)} future={len(future_jobs)} due_window_seconds={args.due_window_seconds}",
         flush=True,
     )
+    notify_telegram(
+        "debug",
+        "\n".join(
+            [
+                "Booking cron started",
+                f"pending: {len(jobs)}",
+                f"skipped: {len(skipped_jobs)}",
+                f"future: {len(future_jobs)}",
+                f"due_window_seconds: {args.due_window_seconds}",
+                f"book: {args.book}",
+                f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+            ]
+        ),
+        args.no_color,
+    )
     if not jobs:
         return 0
 
@@ -1206,6 +1326,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             f"book={job['book']}",
             flush=True,
         )
+        notify_telegram("booking", format_job_message("Booking about to run", job), args.no_color)
 
         now = dt.datetime.now(job["start_at"].tzinfo)
         if now < job["start_at"]:
@@ -1218,6 +1339,8 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             sleep_until(job["start_at"], no_color=args.no_color)
 
         attempts = 0
+        job_done = False
+        failure_reason = ""
         while True:
             attempts += 1
             print(
@@ -1240,6 +1363,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                     do_book=job["book"],
                 )
                 if done:
+                    job_done = True
                     print(
                         colorize("Job complete", Style.GREEN + Style.BOLD, use_color)
                         + f" job={job['name']} date={job['date']} attempts={attempts} "
@@ -1250,10 +1374,13 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
+                failure_reason = f"{type(exc).__name__}: {exc}"
                 print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR job={job['name']} {exc}", file=sys.stderr, flush=True)
 
             if job["max_attempts"] and attempts >= job["max_attempts"]:
                 failures += 1
+                if not failure_reason:
+                    failure_reason = f"reached max_attempts={job['max_attempts']}"
                 print(
                     colorize("Job reached max attempts", Style.RED, use_color)
                     + f" max_attempts={job['max_attempts']} job={job['name']} date={job['date']}",
@@ -1268,6 +1395,29 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                 flush=True,
             )
             time.sleep(job["interval"])
+
+        if job_done:
+            notify_telegram(
+                "booking",
+                format_job_message(
+                    "Booking succeeded" if job["book"] else "Booking dry-run completed",
+                    job,
+                    attempts=attempts,
+                    extra=f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+                ),
+                args.no_color,
+            )
+        else:
+            notify_telegram(
+                "booking",
+                format_job_message(
+                    "Booking failed",
+                    job,
+                    attempts=attempts,
+                    extra=(failure_reason or "slot was not booked"),
+                ),
+                args.no_color,
+            )
 
     return 1 if failures else 0
 

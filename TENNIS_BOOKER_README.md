@@ -185,6 +185,23 @@ Token expiry and token reloads
 For VPS cron, copy `.env.example` to `.env`, fill in the real values, and keep `.env` mode `600`.
 `tennis_booker.py` auto-loads `.env` from the current working directory before parsing CLI flags.
 
+Telegram notifications are optional and controlled by `.env`:
+
+```text
+QOMMUNITY_TELEGRAM_TOKEN
+QOMMUNITY_TELEGRAM_DEBUG_CHAT_ID=-1004406554510
+QOMMUNITY_TELEGRAM_BOOKING_CHAT_ID=-1004417606652
+```
+
+Notification behavior:
+
+```text
+OTP login started/succeeded/failed -> Tennis Debug
+Booking cron started -> Tennis Debug
+Due booking about to run -> Tennis Booking
+Booking succeeded/failed after polling -> Tennis Booking
+```
+
 `booking_base_config.json` contains reusable defaults:
 
 ```json
