@@ -214,9 +214,10 @@ def auth_payload(args: argparse.Namespace, otp: str | None = None) -> dict[str, 
     payload: dict[str, Any] = {
         "contactType": args.auth_contact_type,
         "contact": args.auth_contact,
-        "mobileCountryCode": args.auth_mobile_country_code,
         "client_id": args.auth_client_id,
     }
+    if args.auth_mobile_country_code:
+        payload["mobileCountryCode"] = args.auth_mobile_country_code
     if otp is not None:
         payload["otp"] = otp
         if args.auth_accept_tc:
@@ -250,20 +251,40 @@ def auth_config_from_file(path: Path) -> dict[str, Any]:
     return {}
 
 
+def selected_auth_config(auth: dict[str, Any], mode: str) -> dict[str, Any]:
+    selected = dict(auth)
+    profiles = auth.get("profiles")
+    if isinstance(profiles, dict) and isinstance(profiles.get(mode), dict):
+        selected.update(profiles[mode])
+    mode_config = auth.get(mode)
+    if isinstance(mode_config, dict):
+        selected.update(mode_config)
+    selected.pop("profiles", None)
+    selected.pop("email", None)
+    selected.pop("mobile", None)
+    return selected
+
+
 def apply_auth_config(args: argparse.Namespace) -> None:
     merged: dict[str, Any] = {}
     loaded_paths = []
+    mode = args.login or "email"
     for path in auth_config_candidates(args):
         auth = auth_config_from_file(path)
         if auth:
-            merged.update(auth)
+            merged.update(selected_auth_config(auth, mode))
             loaded_paths.append(str(path))
+
+    if args.auth_contact_type == "":
+        args.auth_contact_type = "2" if mode == "email" else "1"
+    if args.auth_mobile_country_code == "":
+        args.auth_mobile_country_code = "+65" if mode == "mobile" else ""
 
     if not args.auth_contact:
         args.auth_contact = str(merged.get("contact") or merged.get("auth_contact") or "")
-    if args.auth_mobile_country_code == "+65" and (merged.get("mobileCountryCode") or merged.get("mobile_country_code")):
+    if (mode == "mobile" or not args.auth_mobile_country_code) and (merged.get("mobileCountryCode") or merged.get("mobile_country_code")):
         args.auth_mobile_country_code = str(merged.get("mobileCountryCode") or merged.get("mobile_country_code"))
-    if args.auth_contact_type == "1" and (merged.get("contactType") or merged.get("contact_type")):
+    if (merged.get("contactType") or merged.get("contact_type")):
         args.auth_contact_type = str(merged.get("contactType") or merged.get("contact_type"))
     if args.auth_client_id == DEFAULT_CLIENT_ID and (merged.get("client_id") or merged.get("clientId")):
         args.auth_client_id = str(merged.get("client_id") or merged.get("clientId"))
@@ -319,14 +340,14 @@ def run_login(args: argparse.Namespace) -> int:
     apply_auth_config(args)
     if not args.auth_contact:
         raise SystemExit(
-            "Login requires --auth-contact, QOMMUNITY_AUTH_CONTACT, or auth.contact in auth_config.json"
+            f"Login {args.login} requires --auth-contact, QOMMUNITY_AUTH_CONTACT, or auth.{args.login}.contact in auth_config.json"
         )
     session = make_base_session()
     session.no_color = args.no_color
     print(
         colorize("Auth OTP request start", Style.BLUE, not args.no_color)
-        + f" contact_type={args.auth_contact_type} contact={args.auth_contact} "
-        f"mobile_country_code={args.auth_mobile_country_code}",
+        + f" mode={args.login} contact_type={args.auth_contact_type} contact={args.auth_contact}"
+        f"{' mobile_country_code=' + args.auth_mobile_country_code if args.auth_mobile_country_code else ''}",
         flush=True,
     )
     request_result = request_json(session, "POST", auth_url("requesttoken"), json=auth_payload(args))
@@ -1130,14 +1151,21 @@ def main() -> int:
         default="",
         help="Auth config JSON. Defaults to auth_config.json, then --config or booking_base_config.json.",
     )
-    parser.add_argument("--login", action="store_true", help="Request OTP, exchange it for a Bearer token, save --auth-file, then exit.")
+    parser.add_argument(
+        "--login",
+        nargs="?",
+        const="email",
+        choices=("email", "mobile"),
+        default="",
+        help="Request OTP, exchange it for a Bearer token, save --auth-file, then exit. Use --login email or --login mobile.",
+    )
     parser.add_argument(
         "--auth-contact",
         default=os.environ.get("QOMMUNITY_AUTH_CONTACT", ""),
         help="Mobile/email contact used for OTP login. Can also be set with QOMMUNITY_AUTH_CONTACT.",
     )
-    parser.add_argument("--auth-mobile-country-code", default="+65", help="Mobile country code used for OTP login.")
-    parser.add_argument("--auth-contact-type", default="1", help="Qommunity auth contactType. Captured mobile login uses 1.")
+    parser.add_argument("--auth-mobile-country-code", default="", help="Mobile country code used for mobile OTP login.")
+    parser.add_argument("--auth-contact-type", default="", help="Qommunity auth contactType. Defaults to 2 for email, 1 for mobile.")
     parser.add_argument("--auth-client-id", default=DEFAULT_CLIENT_ID, help="Qommunity client_id used for OTP login.")
     parser.add_argument("--auth-accept-tc", action=argparse.BooleanOptionalAction, default=True, help="Send TCAccepted=true during token generation.")
     parser.add_argument("--otp", default="", help="OTP value. If omitted with --login, prompt interactively.")

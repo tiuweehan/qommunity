@@ -100,18 +100,19 @@ Token expiry and token reloads
 --auth-config PATH
   Auth config JSON. Defaults to auth_config.json, then --config or booking_base_config.json.
 
---login
+--login [email|mobile]
   Send an OTP to the configured contact, prompt for the OTP, exchange it for a Bearer token,
-  save --auth-file with mode 600, then exit.
+  save --auth-file with mode 600, then exit. `--login` without a value means email.
 
 --auth-contact VALUE
-  Login contact. Can also be set with QOMMUNITY_AUTH_CONTACT or auth.contact in auth_config.json.
+  Login contact. Can also be set with QOMMUNITY_AUTH_CONTACT or auth.email.contact/auth.mobile.contact
+  in auth_config.json.
 
 --auth-mobile-country-code VALUE
-  Login mobile country code. Default: +65.
+  Login mobile country code. Used only for mobile login. Default for mobile mode: +65.
 
 --auth-contact-type VALUE
-  Qommunity login contactType. Captured mobile login uses 1.
+  Qommunity login contactType. Defaults to 2 for email, 1 for mobile.
 
 --auth-client-id VALUE
   Qommunity client_id. Defaults to the captured app client ID.
@@ -336,10 +337,12 @@ Multiple fallback timings:
 
 ## Auth Login
 
-Generate a fresh auth file without MITM:
+Generate a fresh auth file without MITM. Email login is the default:
 
 ```bash
 ~/venv/bin/python tennis_booker.py --login
+~/venv/bin/python tennis_booker.py --login email
+~/venv/bin/python tennis_booker.py --login mobile
 ```
 
 By default, `--login` reads contact settings from:
@@ -353,10 +356,16 @@ That file is ignored by git. Shape:
 ```json
 {
   "auth": {
-    "contactType": "1",
-    "contact": "85331217",
-    "mobileCountryCode": "+65",
-    "client_id": "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase"
+    "client_id": "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase",
+    "email": {
+      "contactType": "2",
+      "contact": "you@example.com"
+    },
+    "mobile": {
+      "contactType": "1",
+      "contact": "81234567",
+      "mobileCountryCode": "+65"
+    }
   }
 }
 ```
@@ -365,6 +374,13 @@ Override the config path if needed:
 
 ```bash
 ~/venv/bin/python tennis_booker.py --login --auth-config ~/.qommunity_auth_config.json
+```
+
+CLI flags override config values:
+
+```bash
+~/venv/bin/python tennis_booker.py --login email --auth-contact you@example.com
+~/venv/bin/python tennis_booker.py --login mobile --auth-contact 81234567 --auth-mobile-country-code +65
 ```
 
 The CLI calls:
