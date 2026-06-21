@@ -2,6 +2,7 @@ qommunity_auth.json
 auth_config.json
 tennis_booker.log
 .env
+.venv/
 __pycache__/
 *.pyc
 MITM_README.md
