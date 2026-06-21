@@ -667,17 +667,18 @@ def request_json(session: requests.Session, method: str, url: str, **kwargs: Any
     use_color = not getattr(session, "no_color", False)
     request_started = dt.datetime.now().astimezone()
     start = time.perf_counter()
+    timeout = float(kwargs.pop("timeout", os.environ.get("QOMMUNITY_HTTP_TIMEOUT_SECONDS", "10")))
     payload_summary = summarize_payload(kwargs.get("json"))
     print(
         colorize("HTTP request start", Style.BLUE, use_color)
         + f" method={method} url={url} "
-        f"at={request_started.isoformat(timespec='milliseconds')}"
+        f"at={request_started.isoformat(timespec='milliseconds')} timeout={timeout:g}s"
         f"{' payload=' + payload_summary if payload_summary else ''}",
         flush=True,
     )
 
     try:
-        response = session.request(method, url, timeout=10, **kwargs)
+        response = session.request(method, url, timeout=timeout, **kwargs)
     except requests.RequestException as exc:
         elapsed_ms = (time.perf_counter() - start) * 1000
         print(
@@ -795,7 +796,8 @@ def confirm_booking(
         "paymentMethod": payment_method,
         "timeSlots": [{"timeSlotId": slot_id}],
     }
-    return request_json(session, "POST", facility_url(facility_id, booking_date), json=payload)
+    timeout = float(os.environ.get("QOMMUNITY_BOOKING_CONFIRM_TIMEOUT_SECONDS", "360"))
+    return request_json(session, "POST", facility_url(facility_id, booking_date), json=payload, timeout=timeout)
 
 
 def get_booking(session: requests.Session, booking_id: str) -> dict[str, Any]:
