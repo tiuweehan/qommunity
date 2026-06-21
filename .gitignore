@@ -4,3 +4,4 @@ tennis_booker.log
 __pycache__/
 *.pyc
 MITM_README.md
+cloudflare/wrangler.toml
