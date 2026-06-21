@@ -11,16 +11,14 @@ The intended production flow is:
 ```text
 tennis_booker.py --login email --otp-source worker
   -> Qommunity sends OTP email to Gmail
-  -> Gmail forwards matching OTP email to qommunity-otp@tiufamily.com
+  -> Gmail forwards matching OTP email to Apple custom domain mail at tiuweehan.com
+  -> Apple Mail rule forwards subject "OTP for Qommunity" to qommunity-otp@tiufamily.com
   -> Cloudflare Email Routing sends that address to the qommunity-otp Worker
   -> Worker extracts OTP from the raw email
-  -> Worker sends a Telegram notification via TiuFamBot
   -> Worker stores latest OTP in Cloudflare KV
   -> tennis_booker.py polls Worker /otp with a bearer secret
   -> tennis_booker.py exchanges OTP for Qommunity auth and writes qommunity_auth.json
 ```
-
-Telegram is only for visibility. The script reads OTPs from the Worker endpoint, not from Telegram. This avoids relying on Telegram bot update behavior for messages the bot itself sends.
 
 ## Current State
 
@@ -46,15 +44,7 @@ Cloudflare KV:
 ```text
 binding: OTP_KV
 namespace id: e98943b4d7824f0ca9fe7649f8dba500
-key used by Worker: latest
-```
-
-Telegram:
-
-```text
-bot: TiuFamBot
-chat id: 262434816
-bot token file: ~/.telegram
+keys used by Worker: latest, latest_raw
 ```
 
 Local Worker read secret:
@@ -95,10 +85,9 @@ Result:
 OTP_KV id: e98943b4d7824f0ca9fe7649f8dba500
 ```
 
-Uploaded Worker secrets:
+Uploaded Worker secret:
 
 ```bash
-cat ~/.telegram | CLOUDFLARE_API_TOKEN="$(cat ~/.cloudflare)" npx wrangler secret put TELEGRAM_TOKEN
 cat ~/.qommunity_otp_secret | CLOUDFLARE_API_TOKEN="$(cat ~/.cloudflare)" npx wrangler secret put OTP_READ_SECRET
 ```
 
@@ -122,10 +111,11 @@ binding = "OTP_KV"
 id = "e98943b4d7824f0ca9fe7649f8dba500"
 
 [vars]
-TELEGRAM_CHAT_ID = "262434816"
 OTP_REGEX = "\\b\\d{4,8}\\b"
 OTP_TTL_SECONDS = "600"
-TELEGRAM_NOTIFY_NO_OTP = "false"
+STORE_RAW_EMAIL = "true"
+RAW_EMAIL_TTL_SECONDS = "600"
+RAW_EMAIL_MAX_BYTES = "100000"
 ```
 
 ## Email Routing Rule
@@ -134,7 +124,7 @@ Created Cloudflare Email Routing rule:
 
 ```text
 rule id: c32455cc443c43b1971448ae56ca0f10
-name: Qommunity OTP to Telegram Worker
+name: Qommunity OTP to Cloudflare Worker
 enabled: true
 priority: 0
 matcher: to == qommunity-otp@tiufamily.com
@@ -171,7 +161,7 @@ Email handler behavior:
 1. Reads raw incoming email.
 2. Extracts first OTP matching OTP_REGEX.
 3. Writes JSON record to KV key "latest" with TTL OTP_TTL_SECONDS.
-4. Sends Telegram message to TELEGRAM_CHAT_ID using TELEGRAM_TOKEN.
+4. If STORE_RAW_EMAIL is true, stores a short-lived raw email copy in KV key "latest_raw".
 5. Optionally forwards to FORWARD_TO if configured.
 ```
 
@@ -212,6 +202,20 @@ Returns:
 202 {"status":"pending"} if no current OTP is available
 401 if bearer token is missing or wrong
 ```
+
+```text
+GET /raw
+Authorization: Bearer <contents of ~/.qommunity_otp_secret>
+```
+
+Returns the latest raw forwarded email as `text/plain` when `STORE_RAW_EMAIL = "true"`, or:
+
+```text
+202 {"status":"pending"} if no raw email is currently available
+401 if bearer token is missing or wrong
+```
+
+The raw email endpoint is intended for Gmail forwarding verification and short-lived debugging. Keep `RAW_EMAIL_TTL_SECONDS` low.
 
 ## Custom Domain Cleanup
 
@@ -289,7 +293,7 @@ Current ignored `auth_config.json` contains:
     "source": "worker",
     "worker_url": "https://qommunity-otp.tiny-tree-cd6f.workers.dev/otp",
     "secret_file": "~/.qommunity_otp_secret",
-    "timeout_seconds": 180,
+    "timeout_seconds": 300,
     "poll_interval": 2,
     "regex": "\\b\\d{4,8}\\b"
   }
@@ -341,31 +345,53 @@ Expected before any OTP email:
 { "status": "pending" }
 ```
 
-## Remaining Manual Gmail Setup
+## Current Email Forwarding Setup
 
-Gmail must forward Qommunity OTP emails to:
+Current forwarding chain:
+
+```text
+Gmail -> Apple custom domain mail at tiuweehan.com -> Apple Mail rule -> qommunity-otp@tiufamily.com -> Cloudflare Email Routing Worker
+```
+
+The extra Apple Mail hop is slower than direct Gmail forwarding. In the successful test on 2026-06-21, delivery to the Worker took about 56 seconds from the Qommunity OTP request. `auth_config.json` therefore uses a 300 second Worker polling timeout.
+
+Gmail should forward Qommunity OTP emails to the Apple custom domain mailbox. Apple Mail then forwards only matching OTP messages to:
 
 ```text
 qommunity-otp@tiufamily.com
 ```
 
-Recommended Gmail filter:
+Apple Mail rule:
+
+```text
+if subject contains "OTP for Qommunity"
+then forward to qommunity-otp@tiufamily.com
+```
+
+Recommended Gmail filter, if Gmail is filtering before forwarding to Apple Mail:
 
 ```text
 from: Qommunity sender address, once known
 subject/body: OTP or verification keyword
-action: forward to qommunity-otp@tiufamily.com
+action: forward to Apple custom domain mailbox
 ```
 
-Keep the filter narrow. Do not forward all email.
+Keep the Gmail and Apple Mail rules narrow. Do not forward all email.
 
 If Gmail requires forwarding address verification:
 
 ```text
-1. Add qommunity-otp@tiufamily.com as forwarding address.
+1. Add the Apple custom domain mailbox as forwarding address.
 2. Gmail sends verification email.
-3. Cloudflare Worker receives it and should Telegram it.
-4. Use the verification code/link from Telegram to confirm forwarding.
+3. Confirm that forwarding address in Gmail.
+```
+
+If you temporarily forward Gmail verification emails all the way to Cloudflare, fetch the verification email with:
+
+```bash
+secret="$(cat ~/.qommunity_otp_secret)"
+curl -H "Authorization: Bearer $secret" \
+  "https://qommunity-otp.tiny-tree-cd6f.workers.dev/raw"
 ```
 
 ## End-To-End Test
@@ -382,10 +408,11 @@ Expected behavior:
 ```text
 1. Script requests Qommunity email OTP.
 2. Gmail receives OTP.
-3. Gmail forwards it to qommunity-otp@tiufamily.com.
-4. Worker sends Telegram message.
-5. Script logs "OTP received".
-6. Script writes qommunity_auth.json.
+3. Gmail forwards it to Apple custom domain mail.
+4. Apple Mail rule forwards it to qommunity-otp@tiufamily.com.
+5. Cloudflare Email Routing invokes the Worker.
+6. Script logs "OTP received".
+7. Script writes qommunity_auth.json.
 ```
 
 ## Cron Example
@@ -402,7 +429,6 @@ Do not commit:
 
 ```text
 ~/.cloudflare
-~/.telegram
 ~/.qommunity_otp_secret
 auth_config.json
 qommunity_auth.json
@@ -410,8 +436,9 @@ cloudflare/wrangler.toml
 ```
 
 The `/otp` endpoint is public internet-facing but bearer-protected. Anyone without the secret receives `401`.
+The `/raw` endpoint uses the same bearer secret and should only be enabled with a short TTL.
 
-The Telegram bot token and OTP read secret are stored as Cloudflare Worker secrets, not Wrangler plain vars.
+The OTP read secret is stored as a Cloudflare Worker secret, not a Wrangler plain var.
 
 ## Useful Commands
 

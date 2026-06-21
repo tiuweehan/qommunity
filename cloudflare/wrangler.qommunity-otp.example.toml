@@ -7,13 +7,13 @@ binding = "OTP_KV"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 [vars]
-TELEGRAM_CHAT_ID = "REPLACE_WITH_TELEGRAM_CHAT_ID"
 OTP_REGEX = "\\b\\d{4,8}\\b"
 OTP_TTL_SECONDS = "600"
-TELEGRAM_NOTIFY_NO_OTP = "false"
+STORE_RAW_EMAIL = "false"
+RAW_EMAIL_TTL_SECONDS = "600"
+RAW_EMAIL_MAX_BYTES = "100000"
 # Optional: keep a backup copy of forwarded OTP emails.
 # FORWARD_TO = "your-backup@gmail.com"
 
-# Set these as secrets, not vars:
-# wrangler secret put TELEGRAM_TOKEN
+# Set this as a secret, not a var:
 # wrangler secret put OTP_READ_SECRET

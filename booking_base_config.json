@@ -4,7 +4,7 @@
     "open_time": "00:00:00",
     "lead_seconds": 1,
     "interval": 0.2,
-    "max_attempts": 0,
+    "max_attempts": 900,
     "payment_method": "EstateCredit",
     "validate": true,
     "book": false

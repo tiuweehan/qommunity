@@ -11,6 +11,8 @@ facilities.json                  facility keys and IDs
 sunday_8am_bookings_10y.json     actual booking requests
 qommunity_auth.json              saved OTP login response and Bearer token, mode 600
 auth_config.json                 local ignored OTP login contact config
+.env                             local ignored cron/login environment
+.env.example                     template for VPS environment
 tennis_booker.log                default stdout/stderr log file
 ```
 
@@ -180,6 +182,9 @@ Token expiry and token reloads
 
 ## Config Files
 
+For VPS cron, copy `.env.example` to `.env`, fill in the real values, and keep `.env` mode `600`.
+`tennis_booker.py` auto-loads `.env` from the current working directory before parsing CLI flags.
+
 `booking_base_config.json` contains reusable defaults:
 
 ```json
@@ -189,7 +194,7 @@ Token expiry and token reloads
     "open_time": "00:00:00",
     "lead_seconds": 1,
     "interval": 0.2,
-    "max_attempts": 0,
+    "max_attempts": 900,
     "payment_method": "EstateCredit",
     "validate": true,
     "book": false
@@ -228,24 +233,26 @@ Token expiry and token reloads
 
 `preferred_starts` is ordered. The script chooses the first available timing in the list.
 
-## Long-Running Scheduler
+## Cron One-Shot Scheduler
 
 Dry run:
 
 ```bash
-caffeinate -dimsu ~/venv/bin/python tennis_booker.py \
+~/projects/qommunity/.venv/bin/python tennis_booker.py \
   --config booking_base_config.json \
   --facilities-config facilities.json \
-  --bookings-config sunday_8am_bookings_10y.json
+  --bookings-config sunday_8am_bookings_10y.json \
+  --due-window-seconds 120
 ```
 
 Live booking:
 
 ```bash
-caffeinate -dimsu ~/venv/bin/python tennis_booker.py \
+~/projects/qommunity/.venv/bin/python tennis_booker.py \
   --config booking_base_config.json \
   --facilities-config facilities.json \
   --bookings-config sunday_8am_bookings_10y.json \
+  --due-window-seconds 120 \
   --book
 ```
 
@@ -268,14 +275,13 @@ The script starts probing at:
 2026-06-25 23:59:59 +08:00
 ```
 
-Countdown cadence:
+Cron behavior:
 
 ```text
-Every day until 1 day before
-Every hour until 1 hour before
-Every minute until 1 minute before
-Every second until 1 second before
-Then sleeps silently to the probe start
+Run once per day at 23:59 SGT.
+Only jobs whose start_at is within --due-window-seconds are considered.
+The script may sleep briefly until start_at, then polls until booked or max_attempts is reached.
+It exits after the due jobs are handled.
 ```
 
 Past entries are skipped automatically. A job is considered past when its calculated `open_at` is already before the current time. With `advance_days: 30`, this means entries already inside their 30-day release window are skipped instead of being polled late.
@@ -462,23 +468,24 @@ During long runs using the flow file, it reloads the token before expiry.
 If the API returns 401 while using the flow file, it reloads once and retries the request.
 ```
 
-Refresh auth before a long scheduled run with `--login`. MITM is now only needed as a fallback.
+Refresh auth with `--login`. MITM is now only needed as a fallback.
 
 ## Exit Codes
 
 ```text
 0  Success, dry-run slot found, booking confirmed, cancellation confirmed, or facility command completed
 1  One-shot poll did not find an available slot, or cancellation did not end as Cancelled
-2  Watch/scheduler reached max attempts
+2  Watch reached max attempts
 ```
 
-## Current Live Scheduler Command
+## Current Live Booking Cron Command
 
 ```bash
-caffeinate -dimsu ~/venv/bin/python tennis_booker.py \
+~/projects/qommunity/.venv/bin/python tennis_booker.py \
   --config booking_base_config.json \
   --facilities-config facilities.json \
   --bookings-config sunday_8am_bookings_10y.json \
+  --due-window-seconds 120 \
   --book \
   --log-file tennis_booker.log
 ```

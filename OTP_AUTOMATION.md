@@ -6,14 +6,14 @@ This sets up email OTP delivery so `tennis_booker.py` can refresh auth without m
 
 ```text
 Qommunity OTP email
-  -> Gmail forwarding filter
+  -> Gmail
+  -> Apple custom domain address at tiuweehan.com
+  -> Apple Mail rule for subject containing "OTP for Qommunity"
   -> qommunity-otp@tiufamily.com
   -> Cloudflare Email Routing Worker
-  -> Telegram notification
+  -> Cloudflare KV
   -> secret /otp endpoint polled by tennis_booker.py
 ```
-
-Telegram is used for visibility. The script reads from the Worker endpoint, not from Telegram, because Telegram Bot API does not reliably let a bot read its own outgoing messages.
 
 ## Local Files
 
@@ -33,24 +33,12 @@ Ignored local config:
     "source": "worker",
     "worker_url": "https://qommunity-otp.<your-subdomain>.workers.dev/otp",
     "secret_file": "~/.qommunity_otp_secret",
-    "timeout_seconds": 180,
+    "timeout_seconds": 300,
     "poll_interval": 2,
     "regex": "\\b\\d{4,8}\\b"
   }
 }
 ```
-
-## Telegram
-
-1. Create a bot via `@BotFather`.
-2. Save the bot token for `wrangler secret put TELEGRAM_TOKEN`.
-3. Get your chat ID by messaging the bot, then calling:
-
-```bash
-curl "https://api.telegram.org/bot<token>/getUpdates"
-```
-
-Use that chat ID as `TELEGRAM_CHAT_ID`.
 
 ## Cloudflare Worker
 
@@ -72,7 +60,6 @@ Put the returned KV namespace id into `wrangler.toml`.
 Set secrets:
 
 ```bash
-wrangler secret put TELEGRAM_TOKEN
 wrangler secret put OTP_READ_SECRET
 ```
 
@@ -94,6 +81,24 @@ Health check:
 curl https://qommunity-otp.<your-subdomain>.workers.dev/health
 ```
 
+Fetch latest OTP:
+
+```bash
+secret="$(cat ~/.qommunity_otp_secret)"
+curl -H "Authorization: Bearer $secret" \
+  "https://qommunity-otp.<your-subdomain>.workers.dev/otp?after=0"
+```
+
+If `STORE_RAW_EMAIL = "true"` is enabled, fetch the latest raw forwarded email:
+
+```bash
+secret="$(cat ~/.qommunity_otp_secret)"
+curl -H "Authorization: Bearer $secret" \
+  "https://qommunity-otp.<your-subdomain>.workers.dev/raw"
+```
+
+The raw endpoint is mainly for Gmail forwarding verification and debugging. Keep its TTL short.
+
 ## Cloudflare Email Routing
 
 For `tiufamily.com`:
@@ -102,15 +107,34 @@ For `tiufamily.com`:
 2. Add a custom address such as `qommunity-otp@tiufamily.com`.
 3. Route that address to the `qommunity-otp` Worker.
 
-## Gmail Forwarding
+## Email Forwarding
+
+Current forwarding chain:
+
+```text
+Gmail -> Apple custom domain mail at tiuweehan.com -> Apple Mail rule -> qommunity-otp@tiufamily.com
+```
+
+Apple Mail introduces an extra forwarding hop, so OTP delivery can take around a minute. The local `auth_config.json` uses a 300 second Worker polling timeout to tolerate that delay.
+
+Apple Mail rule:
+
+```text
+if subject contains "OTP for Qommunity"
+then forward to qommunity-otp@tiufamily.com
+```
+
+The Cloudflare Worker only receives the message after Apple Mail processes that rule.
+
+## Gmail Forwarding Verification
 
 1. Gmail Settings -> Forwarding and POP/IMAP -> Add forwarding address.
-2. Add `qommunity-otp@tiufamily.com`.
+2. Add the Apple custom domain address that receives Qommunity OTP email.
 3. Complete Gmail's verification email.
 4. Create a filter for Qommunity OTP messages.
-5. Choose `Forward it` to `qommunity-otp@tiufamily.com`.
+5. Choose `Forward it` to the Apple custom domain address.
 
-Keep the filter narrow so unrelated email does not get sent to the Worker.
+Keep the Gmail and Apple Mail rules narrow so unrelated email does not get sent to the Worker.
 
 ## Test
 

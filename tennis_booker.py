@@ -43,6 +43,8 @@ DEFAULT_OPEN_TIME = "00:00:00"
 DEFAULT_LEAD_SECONDS = 1.0
 DEFAULT_LOG_FILE = "tennis_booker.log"
 DEFAULT_OTP_REGEX = r"\b\d{4,8}\b"
+DEFAULT_ENV_FILE = ".env"
+DEFAULT_DUE_WINDOW_SECONDS = 120
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -74,6 +76,24 @@ class Tee:
     def flush(self) -> None:
         self.stream.flush()
         self.log_file.flush()
+
+
+def load_env_file(path: str = DEFAULT_ENV_FILE) -> None:
+    env_path = Path(path)
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key or key in os.environ:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
 
 
 def colorize(text: str, color: str, enabled: bool = True) -> str:
@@ -1132,10 +1152,14 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     now = dt.datetime.now().astimezone()
     pending_jobs = []
     skipped_jobs = []
+    future_jobs = []
+    due_by = now + dt.timedelta(seconds=args.due_window_seconds) if args.due_window_seconds else None
     for job in jobs:
         comparable_now = now.astimezone(job["open_at"].tzinfo)
         if job["open_at"] <= comparable_now:
             skipped_jobs.append(job)
+        elif due_by and job["start_at"] > due_by.astimezone(job["start_at"].tzinfo):
+            future_jobs.append(job)
         else:
             pending_jobs.append(job)
 
@@ -1159,7 +1183,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
     print(
         colorize(f"Loaded {len(jobs)} pending booking job(s)", Style.BOLD + Style.CYAN, use_color)
-        + f" skipped={len(skipped_jobs)}",
+        + f" skipped={len(skipped_jobs)} future={len(future_jobs)} due_window_seconds={args.due_window_seconds}",
         flush=True,
     )
     if not jobs:
@@ -1245,20 +1269,21 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def main() -> int:
+    load_env_file(os.environ.get("QOMMUNITY_ENV_FILE", DEFAULT_ENV_FILE))
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="", help="JSON config file for long-running multi-date booking.")
-    parser.add_argument("--facilities-config", default="", help="Optional JSON file with facilities[] to merge with --config.")
-    parser.add_argument("--bookings-config", default="", help="Optional JSON file with bookings[] to merge with --config.")
+    parser.add_argument("--config", default=os.environ.get("QOMMUNITY_CONFIG", ""), help="JSON config file for long-running multi-date booking.")
+    parser.add_argument("--facilities-config", default=os.environ.get("QOMMUNITY_FACILITIES_CONFIG", ""), help="Optional JSON file with facilities[] to merge with --config.")
+    parser.add_argument("--bookings-config", default=os.environ.get("QOMMUNITY_BOOKINGS_CONFIG", ""), help="Optional JSON file with bookings[] to merge with --config.")
     parser.add_argument("--list-facilities", action="store_true", help="Fetch available facilities from the API and print them.")
     parser.add_argument("--write-facilities-config", default="", help="Fetch facilities and write a facilities[] config JSON file.")
-    parser.add_argument("--log-file", default=DEFAULT_LOG_FILE, help='Mirror stdout/stderr to this file. Use "" to disable.')
+    parser.add_argument("--log-file", default=os.environ.get("QOMMUNITY_LOG_FILE", DEFAULT_LOG_FILE), help='Mirror stdout/stderr to this file. Use "" to disable.')
     parser.add_argument("--no-color", action="store_true", help="Disable ANSI colors in terminal output.")
     parser.add_argument("--date", help="Booking date, e.g. 2026-07-26")
     parser.add_argument("--flow-file", default=DEFAULT_FLOW_FILE)
-    parser.add_argument("--auth-file", default=DEFAULT_AUTH_FILE, help="Saved auth JSON. Used before --flow-file when present.")
+    parser.add_argument("--auth-file", default=os.environ.get("QOMMUNITY_AUTH_FILE", DEFAULT_AUTH_FILE), help="Saved auth JSON. Used before --flow-file when present.")
     parser.add_argument(
         "--auth-config",
-        default="",
+        default=os.environ.get("QOMMUNITY_AUTH_CONFIG", ""),
         help="Auth config JSON. Defaults to auth_config.json, then --config or booking_base_config.json.",
     )
     parser.add_argument(
@@ -1274,18 +1299,18 @@ def main() -> int:
         default=os.environ.get("QOMMUNITY_AUTH_CONTACT", ""),
         help="Mobile/email contact used for OTP login. Can also be set with QOMMUNITY_AUTH_CONTACT.",
     )
-    parser.add_argument("--auth-mobile-country-code", default="", help="Mobile country code used for mobile OTP login.")
-    parser.add_argument("--auth-contact-type", default="", help="Qommunity auth contactType. Defaults to 2 for email, 1 for mobile.")
-    parser.add_argument("--auth-client-id", default=DEFAULT_CLIENT_ID, help="Qommunity client_id used for OTP login.")
+    parser.add_argument("--auth-mobile-country-code", default=os.environ.get("QOMMUNITY_AUTH_MOBILE_COUNTRY_CODE", ""), help="Mobile country code used for mobile OTP login.")
+    parser.add_argument("--auth-contact-type", default=os.environ.get("QOMMUNITY_AUTH_CONTACT_TYPE", ""), help="Qommunity auth contactType. Defaults to 2 for email, 1 for mobile.")
+    parser.add_argument("--auth-client-id", default=os.environ.get("QOMMUNITY_AUTH_CLIENT_ID", DEFAULT_CLIENT_ID), help="Qommunity client_id used for OTP login.")
     parser.add_argument("--auth-accept-tc", action=argparse.BooleanOptionalAction, default=True, help="Send TCAccepted=true during token generation.")
     parser.add_argument("--otp", default="", help="OTP value. If omitted with --login, prompt interactively.")
-    parser.add_argument("--otp-source", choices=("prompt", "worker"), default="", help="OTP source. Defaults to otp.source in auth_config.json, else prompt.")
+    parser.add_argument("--otp-source", choices=("prompt", "worker"), default=os.environ.get("QOMMUNITY_OTP_SOURCE", ""), help="OTP source. Defaults to QOMMUNITY_OTP_SOURCE, otp.source in auth_config.json, else prompt.")
     parser.add_argument("--otp-worker-url", default=os.environ.get("QOMMUNITY_OTP_WORKER_URL", ""), help="Secret-protected Worker URL used by --otp-source worker.")
     parser.add_argument("--otp-secret", default=os.environ.get("QOMMUNITY_OTP_SECRET", ""), help="Worker read secret. Prefer --otp-secret-file.")
     parser.add_argument("--otp-secret-file", default=os.environ.get("QOMMUNITY_OTP_SECRET_FILE", ""), help="File containing the Worker read secret.")
-    parser.add_argument("--otp-timeout-seconds", type=int, default=None, help="Seconds to wait for Worker OTP. Default: 180.")
-    parser.add_argument("--otp-poll-interval", type=float, default=None, help="Seconds between Worker OTP polls. Default: 2.")
-    parser.add_argument("--otp-regex", default="", help=f"OTP regex. Default: {DEFAULT_OTP_REGEX}")
+    parser.add_argument("--otp-timeout-seconds", type=int, default=int(os.environ["QOMMUNITY_OTP_TIMEOUT_SECONDS"]) if os.environ.get("QOMMUNITY_OTP_TIMEOUT_SECONDS") else None, help="Seconds to wait for Worker OTP. Default: 180.")
+    parser.add_argument("--otp-poll-interval", type=float, default=float(os.environ["QOMMUNITY_OTP_POLL_INTERVAL"]) if os.environ.get("QOMMUNITY_OTP_POLL_INTERVAL") else None, help="Seconds between Worker OTP polls. Default: 2.")
+    parser.add_argument("--otp-regex", default=os.environ.get("QOMMUNITY_OTP_REGEX", ""), help=f"OTP regex. Default: {DEFAULT_OTP_REGEX}")
     parser.add_argument("--token", default="", help="Bearer token. Defaults to --auth-file when present, else latest token from flow file.")
     parser.add_argument(
         "--token-refresh-skew",
@@ -1309,6 +1334,12 @@ def main() -> int:
     parser.add_argument("--watch", action="store_true", help="Poll until booked or until --max-attempts is reached.")
     parser.add_argument("--interval", type=float, default=0.5, help="Polling interval in seconds for --watch.")
     parser.add_argument("--max-attempts", type=int, default=0, help="0 means unlimited in --watch mode.")
+    parser.add_argument(
+        "--due-window-seconds",
+        type=int,
+        default=int(os.environ.get("QOMMUNITY_DUE_WINDOW_SECONDS", str(DEFAULT_DUE_WINDOW_SECONDS))),
+        help="With config mode, only run jobs whose probe start is within this many seconds. Default: 120.",
+    )
     parser.add_argument(
         "--wait-until",
         default="",

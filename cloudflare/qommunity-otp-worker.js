@@ -17,33 +17,21 @@ function authorized(request, env) {
 }
 
 function extractOtp(text, env) {
+  const preferredPatterns = [
+    /\byour\s+otp\s+is\s+(\d{4,8})\b/i,
+    /\botp\s*(?:is|:|-)?\s*(\d{4,8})\b/i,
+    /\bcode\s*(?:is|:|-)?\s*(\d{4,8})\b/i,
+  ];
+  for (const preferredPattern of preferredPatterns) {
+    const preferredMatch = text.match(preferredPattern);
+    if (preferredMatch) {
+      return preferredMatch[1];
+    }
+  }
+
   const pattern = new RegExp(env.OTP_REGEX || DEFAULT_OTP_REGEX);
   const match = text.match(pattern);
   return match ? match[0] : "";
-}
-
-async function sendTelegram(record, env) {
-  if (!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID) {
-    return;
-  }
-  const message = [
-    "Qommunity OTP",
-    `OTP: ${record.otp}`,
-    `From: ${record.from || ""}`,
-    `To: ${record.to || ""}`,
-    `Subject: ${record.subject || ""}`,
-    `Received: ${record.receivedAt}`,
-  ].join("\n");
-
-  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      chat_id: env.TELEGRAM_CHAT_ID,
-      text: message,
-      disable_web_page_preview: true,
-    }),
-  });
 }
 
 async function handleEmail(message, env) {
@@ -59,12 +47,22 @@ async function handleEmail(message, env) {
     subject,
   };
 
+  if (env.STORE_RAW_EMAIL === "true") {
+    try {
+      const ttl = Number(env.RAW_EMAIL_TTL_SECONDS || 600);
+      await env.OTP_KV.put("latest_raw", raw.slice(0, Number(env.RAW_EMAIL_MAX_BYTES || 100000)), {
+        expirationTtl: ttl,
+      });
+      record.rawStored = true;
+    } catch (error) {
+      record.rawStored = false;
+      record.rawError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
   if (otp) {
     const ttl = Number(env.OTP_TTL_SECONDS || 600);
     await env.OTP_KV.put("latest", JSON.stringify(record), { expirationTtl: ttl });
-    await sendTelegram(record, env);
-  } else if (env.TELEGRAM_NOTIFY_NO_OTP === "true") {
-    await sendTelegram({ ...record, otp: "not found" }, env);
   }
 
   if (env.FORWARD_TO) {
@@ -76,6 +74,21 @@ async function handleFetch(request, env) {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     return json({ ok: true });
+  }
+  if (url.pathname === "/raw") {
+    if (!authorized(request, env)) {
+      return json({ error: "unauthorized" }, { status: 401 });
+    }
+    const raw = await env.OTP_KV.get("latest_raw");
+    if (!raw) {
+      return json({ status: "pending" }, { status: 202 });
+    }
+    return new Response(raw, {
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "cache-control": "no-store",
+      },
+    });
   }
   if (url.pathname !== "/otp") {
     return json({ error: "not found" }, { status: 404 });
