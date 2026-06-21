@@ -34,6 +34,8 @@ DEFAULT_AUTH_CONFIG_FILE = "auth_config.json"
 DEFAULT_BASE_CONFIG_FILE = "booking_base_config.json"
 DEFAULT_CLIENT_ID = "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase"
 DEFAULT_CA_BUNDLE = certifi.where()
+DEFAULT_MITMPROXY_CA = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
+DEFAULT_COMBINED_CA_BUNDLE = str(Path.home() / ".qommunity-ca-bundle.pem")
 DEFAULT_PREFERRED_STARTS = ("08:00:00", "07:00:00")
 TOKEN_REFRESH_SKEW_SECONDS = 300
 DEFAULT_ADVANCE_DAYS = 30
@@ -147,7 +149,7 @@ def extract_latest_bearer(flow_file: str) -> str:
 
 def make_base_session() -> requests.Session:
     session = requests.Session()
-    session.verify = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE") or DEFAULT_CA_BUNDLE
+    session.verify = resolve_ca_bundle()
     session.headers.update(
         {
             "user-agent": "Dart/3.9 (dart:io)",
@@ -157,6 +159,25 @@ def make_base_session() -> requests.Session:
         }
     )
     return session
+
+
+def resolve_ca_bundle() -> str:
+    override = os.environ.get("QOMMUNITY_CA_BUNDLE")
+    if override:
+        return override
+
+    mitm_ca = Path(DEFAULT_MITMPROXY_CA)
+    if not mitm_ca.exists():
+        return DEFAULT_CA_BUNDLE
+
+    combined = Path(DEFAULT_COMBINED_CA_BUNDLE)
+    certifi_text = Path(DEFAULT_CA_BUNDLE).read_text()
+    mitm_text = mitm_ca.read_text()
+    desired = certifi_text.rstrip() + "\n" + mitm_text.strip() + "\n"
+    if not combined.exists() or combined.read_text() != desired:
+        combined.write_text(desired)
+        os.chmod(combined, 0o600)
+    return str(combined)
 
 
 def make_session(token: str) -> requests.Session:
