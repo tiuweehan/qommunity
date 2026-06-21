@@ -1175,6 +1175,32 @@ def attempt_once(
     )
     try:
         result = confirm_booking(session, booking_date, facility_id, slot_id, payment_method)
+    except requests.RequestException as exc:
+        print(
+            colorize("Booking confirm timed out; rechecking availability before any retry", Style.YELLOW, use_color)
+            + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+            f"error={type(exc).__name__}: {exc}",
+            flush=True,
+        )
+        recheck = request_json(session, "GET", facility_url(facility_id, booking_date))
+        recheck_day = get_date_entry(recheck, booking_date)
+        outcome, reason = classify_unavailable(recheck_day, preferred_starts)
+        recheck_slots = (recheck_day or {}).get("timeSlots") or []
+        print(
+            colorize("Post-timeout availability", Style.YELLOW, use_color)
+            + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+            f"outcome={outcome} reason={reason} "
+            f"availability=\"{summarize_slots(recheck_slots, preferred_starts)}\"",
+            flush=True,
+        )
+        if outcome == OUTCOME_FULL:
+            print(
+                colorize("Booking confirm timeout treated as terminal", Style.YELLOW, use_color)
+                + " reason=slot_became_full_after_confirm_request",
+                flush=True,
+            )
+            return OUTCOME_BOOKED
+        return outcome
     except ApiError as exc:
         if exc.status_code != 422:
             raise
