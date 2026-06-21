@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import certifi
 from mitmproxy import http
 from mitmproxy.io import FlowReader
 
@@ -32,6 +33,7 @@ DEFAULT_AUTH_FILE = "qommunity_auth.json"
 DEFAULT_AUTH_CONFIG_FILE = "auth_config.json"
 DEFAULT_BASE_CONFIG_FILE = "booking_base_config.json"
 DEFAULT_CLIENT_ID = "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase"
+DEFAULT_CA_BUNDLE = certifi.where()
 DEFAULT_PREFERRED_STARTS = ("08:00:00", "07:00:00")
 TOKEN_REFRESH_SKEW_SECONDS = 300
 DEFAULT_ADVANCE_DAYS = 30
@@ -145,6 +147,7 @@ def extract_latest_bearer(flow_file: str) -> str:
 
 def make_base_session() -> requests.Session:
     session = requests.Session()
+    session.verify = os.environ.get("REQUESTS_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE") or DEFAULT_CA_BUNDLE
     session.headers.update(
         {
             "user-agent": "Dart/3.9 (dart:io)",
