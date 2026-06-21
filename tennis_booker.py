@@ -1304,12 +1304,13 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
         )
     for label, selected_jobs in (("Pending job detail", jobs), ("Next future job", future_jobs[:1])):
         for job in selected_jobs:
+            effective_book = bool(args.book or job["book"])
             print(
                 colorize(label, Style.CYAN if label.startswith("Pending") else Style.GRAY, use_color)
                 + f" name={job['name']} date={job['date']} starts={list(job['preferred_starts'])} "
                 f"open_at={job['open_at'].isoformat(timespec='seconds')} "
                 f"start_at={job['start_at'].isoformat(timespec='seconds')} "
-                f"book={job['book']} validate={job['validate']} max_attempts={job['max_attempts']} "
+                f"book={effective_book} validate={job['validate']} max_attempts={job['max_attempts']} "
                 f"interval={job['interval']}",
                 flush=True,
             )
