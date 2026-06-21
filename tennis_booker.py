@@ -20,8 +20,6 @@ from typing import Any
 
 import requests
 import certifi
-from mitmproxy import http
-from mitmproxy.io import FlowReader
 
 
 API_BASE = "https://prod-qomm-api-hmhggeagdbfycvd0.southeastasia-01.azurewebsites.net//api/v1.0"
@@ -141,6 +139,12 @@ def auth_url(path: str) -> str:
 
 
 def extract_latest_bearer(flow_file: str) -> str:
+    try:
+        from mitmproxy import http
+        from mitmproxy.io import FlowReader
+    except ImportError as exc:
+        raise SystemExit("mitmproxy is required only when loading tokens from --flow-file. Run --login or provide --auth-file instead.") from exc
+
     token = ""
     path = Path(flow_file)
     if not path.exists():
