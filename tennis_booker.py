@@ -15,6 +15,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -1295,6 +1296,23 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
         + f" skipped={len(skipped_jobs)} future={len(future_jobs)} due_window_seconds={args.due_window_seconds}",
         flush=True,
     )
+    if due_by:
+        print(
+            colorize("Due window", Style.CYAN, use_color)
+            + f" now={now.isoformat(timespec='seconds')} due_by={due_by.isoformat(timespec='seconds')}",
+            flush=True,
+        )
+    for label, selected_jobs in (("Pending job detail", jobs), ("Next future job", future_jobs[:1])):
+        for job in selected_jobs:
+            print(
+                colorize(label, Style.CYAN if label.startswith("Pending") else Style.GRAY, use_color)
+                + f" name={job['name']} date={job['date']} starts={list(job['preferred_starts'])} "
+                f"open_at={job['open_at'].isoformat(timespec='seconds')} "
+                f"start_at={job['start_at'].isoformat(timespec='seconds')} "
+                f"book={job['book']} validate={job['validate']} max_attempts={job['max_attempts']} "
+                f"interval={job['interval']}",
+                flush=True,
+            )
     notify_telegram(
         "debug",
         "\n".join(
@@ -1376,6 +1394,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             except Exception as exc:
                 failure_reason = f"{type(exc).__name__}: {exc}"
                 print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR job={job['name']} {exc}", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
 
             if job["max_attempts"] and attempts >= job["max_attempts"]:
                 failures += 1
@@ -1504,6 +1523,12 @@ def main() -> int:
     args = parser.parse_args()
     setup_output_logging(args.log_file, args.no_color)
     use_color = not args.no_color
+    print(
+        colorize("Runtime context", Style.GRAY, use_color)
+        + f" cwd={Path.cwd()} argv={sys.argv!r} now={dt.datetime.now().astimezone().isoformat(timespec='seconds')} "
+        f"python={sys.version.split()[0]}",
+        flush=True,
+    )
 
     if args.login:
         return run_login(args)
@@ -1523,6 +1548,13 @@ def main() -> int:
         return 0
 
     if args.config:
+        print(
+            colorize("Config mode", Style.CYAN, use_color)
+            + f" config={args.config} facilities_config={args.facilities_config or 'none'} "
+            f"bookings_config={args.bookings_config or 'none'} auth_file={args.auth_file} "
+            f"book={args.book} due_window_seconds={args.due_window_seconds}",
+            flush=True,
+        )
         base_config = load_config(args.config)
         facilities_config = load_config(args.facilities_config) if args.facilities_config else None
         bookings_config = load_config(args.bookings_config) if args.bookings_config else None
