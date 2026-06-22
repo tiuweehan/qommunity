@@ -878,6 +878,19 @@ def status_for_report(day: dict[str, Any] | None, preferred_starts: tuple[str, .
     return str(day.get("status") or "Unavailable")
 
 
+def earliest_not_yet_open_date(data: dict[str, Any]) -> str | None:
+    availability = data.get("availability") or {}
+    candidates = []
+    for day in availability.get("availableDates") or []:
+        slots = day.get("timeSlots") or []
+        slot_statuses = [str(slot.get("status") or "") for slot in slots if isinstance(slot, dict)]
+        if day.get("status") == "Not Yet Open" or "Not Yet Open" in slot_statuses:
+            date_value = str(day.get("date") or "")
+            if date_value:
+                candidates.append(date_value)
+    return min(candidates) if candidates else None
+
+
 def classify_unavailable(day: dict[str, Any] | None, preferred_starts: tuple[str, ...]) -> tuple[str, str]:
     if not day:
         return OUTCOME_RETRY, "target date not returned"
@@ -1197,6 +1210,7 @@ def make_job(
         "max_attempts": max_attempts,
         "open_at": open_at,
         "start_at": start_at,
+        "open_time": normalize_time(str(open_time)),
         "advance_days": advance_days,
         "lead_seconds": lead_seconds,
     }
@@ -1295,10 +1309,59 @@ def select_jobs_due_today(jobs: list[dict[str, Any]], now: dt.datetime) -> list[
     return selected
 
 
+def next_open_at_for_job(job: dict[str, Any], now: dt.datetime) -> dt.datetime:
+    local_now = now.astimezone(job["open_at"].tzinfo)
+    open_time = str(job.get("open_time") or DEFAULT_OPEN_TIME)
+    open_at = parse_local_datetime(local_now.date().isoformat(), open_time)
+    if open_at <= local_now:
+        open_at += dt.timedelta(days=1)
+    return open_at
+
+
+def with_dynamic_open_times(job: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
+    updated = dict(job)
+    open_at = next_open_at_for_job(job, now)
+    updated["open_at"] = open_at
+    updated["start_at"] = open_at - dt.timedelta(seconds=float(job.get("lead_seconds", DEFAULT_LEAD_SECONDS)))
+    updated["due_source"] = "earliest_not_yet_open"
+    return updated
+
+
+def select_jobs_for_earliest_not_yet_open_dates(
+    session: requests.Session,
+    jobs: list[dict[str, Any]],
+    now: dt.datetime,
+    use_color: bool,
+) -> list[dict[str, Any]]:
+    by_facility: dict[str, list[dict[str, Any]]] = {}
+    today = now.date()
+    for job in jobs:
+        if dt.date.fromisoformat(str(job["date"])) >= today:
+            by_facility.setdefault(str(job["facility_id"]), []).append(job)
+
+    selected = []
+    for facility_id, facility_jobs in by_facility.items():
+        probe_date = min(str(job["date"]) for job in facility_jobs)
+        data = request_json(session, "GET", facility_url(facility_id, probe_date))
+        due_date = earliest_not_yet_open_date(data)
+        print(
+            colorize("Earliest Not Yet Open check", Style.CYAN, use_color)
+            + f" facility_id={facility_id} probe_date={probe_date} due_date={due_date or 'none'}",
+            flush=True,
+        )
+        if not due_date:
+            continue
+        for job in facility_jobs:
+            if str(job["date"]) == due_date:
+                selected.append(with_dynamic_open_times(job, now))
+    return sorted(selected, key=lambda job: (job["start_at"], job["date"], job["name"], job["preferred_starts"]))
+
+
 def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any]) -> int:
     use_color = not args.no_color
     now = dt.datetime.now().astimezone()
-    jobs = select_jobs_due_today(expand_config_jobs(config), now)
+    session, _, _ = load_session(args)
+    jobs = select_jobs_due_today(select_jobs_for_earliest_not_yet_open_dates(session, expand_config_jobs(config), now, use_color), now)
     print(
         colorize("Due tonight notification", Style.CYAN, use_color)
         + f" now={now.isoformat(timespec='seconds')} count={len(jobs)}",
@@ -1668,6 +1731,8 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     jobs = expand_config_jobs(config)
     now = dt.datetime.now().astimezone()
     due_by = now + dt.timedelta(seconds=args.due_window_seconds) if args.due_window_seconds else None
+    session, token, fixed_token = load_session(args)
+    jobs = select_jobs_for_earliest_not_yet_open_dates(session, jobs, now, use_color)
     selection = select_config_jobs(jobs, now, args.due_window_seconds, args.job_index)
     pending_jobs = selection["pending"]
     skipped_jobs = selection["skipped"]
@@ -1744,7 +1809,6 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     if not jobs:
         return 0
 
-    session, token, fixed_token = load_session(args)
     failures = 0
 
     for i, job in enumerate(jobs, 1):

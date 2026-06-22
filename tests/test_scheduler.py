@@ -120,6 +120,26 @@ class SchedulerSelectionTest(unittest.TestCase):
         selected = tb.select_jobs_due_today(self.jobs, now=self.at("2026-06-23T00:00:01"))
         self.assertEqual(selected, [])
 
+    def test_earliest_not_yet_open_date_uses_day_or_slot_status(self) -> None:
+        data = {
+            "availability": {
+                "availableDates": [
+                    {"date": "2026-07-23", "status": "Available", "timeSlots": []},
+                    {"date": "2026-07-24", "status": "Available", "timeSlots": [{"status": "Not Yet Open"}]},
+                    {"date": "2026-07-25", "status": "Not Yet Open", "timeSlots": []},
+                ]
+            }
+        }
+        self.assertEqual(tb.earliest_not_yet_open_date(data), "2026-07-24")
+
+    def test_dynamic_open_time_is_next_configured_open_time(self) -> None:
+        job = self.jobs[0]
+        updated = tb.with_dynamic_open_times(job, now=self.at("2026-06-22T08:00:00"))
+
+        self.assertEqual(updated["open_at"].isoformat(timespec="seconds"), "2026-06-23T00:00:00+08:00")
+        self.assertEqual(updated["start_at"].isoformat(timespec="seconds"), "2026-06-22T23:59:59+08:00")
+        self.assertEqual(updated["due_source"], "earliest_not_yet_open")
+
 
 class TenYearConfigTest(unittest.TestCase):
     def test_sunday_config_has_independent_7am_and_8am_entries(self) -> None:

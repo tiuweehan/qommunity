@@ -160,7 +160,8 @@ Token expiry and token reloads
 
 --notify-due-tonight
   In config mode, send a Telegram summary of jobs whose probe start is later today, then exit.
-  This is used by the 08:00 daily reminder cron and does not call the Qommunity API.
+  This is used by the 08:00 daily reminder cron. It checks Qommunity availability and only
+  reports jobs whose booking date is the earliest date currently marked Not Yet Open.
 
 --job-index N
   In config mode, run only the Nth pending job after sorting. 0-based. Use this for cron sharding.
@@ -286,32 +287,34 @@ Live booking:
 Scheduling behavior:
 
 ```text
-open_at  = booking date minus advance_days, at open_time
-start_at = open_at minus lead_seconds
+The scheduler first checks Qommunity availability for each facility.
+A config job is due only if its booking date is the earliest date currently marked Not Yet Open.
+For a due job, open_at is treated as the next configured open_time, and start_at is open_at minus lead_seconds.
 ```
 
-With current defaults, a `2026-07-26` booking opens at:
+With current defaults, if Qommunity says `2026-07-26` is the earliest Not Yet Open date,
+the script treats it as opening at:
 
 ```text
-2026-06-26 00:00:00 +08:00
+the next 00:00:00 +08:00
 ```
 
 The script starts probing at:
 
 ```text
-2026-06-25 23:59:59 +08:00
+one second before that, e.g. 23:59:59 +08:00
 ```
 
 Cron behavior:
 
 ```text
 Run once per day at 23:59 SGT.
-Only jobs whose start_at is within --due-window-seconds are considered.
+Only jobs matching the earliest Not Yet Open date and whose start_at is within --due-window-seconds are considered.
 The script may sleep briefly until start_at, then polls until booked or max_attempts is reached.
 It exits after the due jobs are handled.
 ```
 
-Past entries are skipped automatically. A job is considered past when its calculated `open_at` is already before the current time. With `advance_days: 30`, this means entries already inside their 30-day release window are skipped instead of being polled late.
+`advance_days` remains in the config as a fallback/sort hint for pure local scheduling helpers, but live cron uses the API's earliest `Not Yet Open` date instead of trusting a hard-coded release window.
 
 ## Facility Listing
 
