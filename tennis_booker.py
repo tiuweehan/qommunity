@@ -223,7 +223,7 @@ def format_booking_start_message(job: dict[str, Any]) -> str:
 
 def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime) -> str:
     lines = [
-        "<b>🎾 Bookings Due Tonight</b>",
+        "<b>📅 Bookings Due Tonight</b>",
         f"Run Date: {html.escape(display_booking_date(now.date().isoformat()))}",
         f"Count: {len(jobs)}",
     ]

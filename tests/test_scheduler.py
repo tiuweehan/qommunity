@@ -177,7 +177,7 @@ class TelegramMessageTest(unittest.TestCase):
 
         message = tb.format_tonight_jobs_message(jobs, now)
 
-        self.assertIn("<b>🎾 Bookings Due Tonight</b>", message)
+        self.assertIn("<b>📅 Bookings Due Tonight</b>", message)
         self.assertIn("Run Date: 2026-06-22 (Mon)", message)
         self.assertIn("Count: 2", message)
         self.assertIn("1. Tennis Court 3", message)
