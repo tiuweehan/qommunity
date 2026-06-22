@@ -1106,7 +1106,7 @@ def expand_config_jobs(config: dict[str, Any]) -> list[dict[str, Any]]:
                 if not booking_date:
                     raise SystemExit(f"Booking request for {facility_ref} requires date or dates[]")
                 jobs.append(make_job(facility, defaults, str(booking_date), starts, request))
-        return sorted(jobs, key=lambda job: (job["start_at"], job["date"], job["name"]))
+        return sorted(jobs, key=lambda job: (job["start_at"], job["date"], job["name"], job["preferred_starts"]))
 
     for facility in facilities:
         if not isinstance(facility, dict):
@@ -1122,7 +1122,7 @@ def expand_config_jobs(config: dict[str, Any]) -> list[dict[str, Any]]:
         for booking_date in dates:
             jobs.append(make_job(facility, defaults, str(booking_date), starts))
 
-    return sorted(jobs, key=lambda job: (job["start_at"], job["date"], job["name"]))
+    return sorted(jobs, key=lambda job: (job["start_at"], job["date"], job["name"], job["preferred_starts"]))
 
 
 def attempt_once(
@@ -1460,9 +1460,23 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
         for job in jobs:
             job["validate"] = True
 
+    unsharded_job_count = len(jobs)
+    if args.job_index is not None:
+        if args.job_index < 0:
+            raise SystemExit("--job-index must be 0 or greater")
+        selected_job = jobs[args.job_index : args.job_index + 1]
+        print(
+            colorize("Job shard selected", Style.CYAN, use_color)
+            + f" job_index={args.job_index} pending_before_shard={unsharded_job_count} "
+            f"selected={len(selected_job)}",
+            flush=True,
+        )
+        jobs = selected_job
+
     print(
         colorize(f"Loaded {len(jobs)} pending booking job(s)", Style.BOLD + Style.CYAN, use_color)
-        + f" skipped={len(skipped_jobs)} future={len(future_jobs)} due_window_seconds={args.due_window_seconds}",
+        + f" skipped={len(skipped_jobs)} future={len(future_jobs)} "
+        f"pending_before_shard={unsharded_job_count} due_window_seconds={args.due_window_seconds}",
         flush=True,
     )
     if due_by:
@@ -1489,6 +1503,8 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             [
                 "Booking cron started",
                 f"pending: {len(jobs)}",
+                f"pending_before_shard: {unsharded_job_count}",
+                f"job_index: {args.job_index if args.job_index is not None else 'none'}",
                 f"skipped: {len(skipped_jobs)}",
                 f"future: {len(future_jobs)}",
                 f"due_window_seconds: {args.due_window_seconds}",
@@ -1692,6 +1708,12 @@ def main() -> int:
     )
     parser.add_argument("--validate", action="store_true", help="POST validation when a slot is available.")
     parser.add_argument("--book", action="store_true", help="Actually confirm the booking.")
+    parser.add_argument(
+        "--job-index",
+        type=int,
+        default=int(os.environ["QOMMUNITY_JOB_INDEX"]) if os.environ.get("QOMMUNITY_JOB_INDEX") else None,
+        help="In config mode, run only the Nth pending job after sorting. 0-based. If absent, run all pending jobs.",
+    )
     parser.add_argument("--show-booking-id", default="", help="Fetch and print a booking by ID, then exit.")
     parser.add_argument("--cancel-booking-id", default="", help="Cancel a booking by ID, then fetch and print it.")
     parser.add_argument("--cancel-reason", default="Wrong timing", help="Reason sent with --cancel-booking-id.")

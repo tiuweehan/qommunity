@@ -158,6 +158,11 @@ Token expiry and token reloads
 --book
   Actually confirm bookings. Without this, scheduler config stays dry-run unless book=true in config.
 
+--job-index N
+  In config mode, run only the Nth pending job after sorting. 0-based. Use this for cron sharding.
+  For example, two cron invocations with --job-index 0 and --job-index 1 can book two independent
+  same-night jobs without either process handling both.
+
 --show-booking-id UUID
   Fetch and print a booking by ID.
 
