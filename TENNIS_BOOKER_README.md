@@ -500,6 +500,18 @@ Refresh auth with `--login`. MITM is now only needed as a fallback.
 2  Watch reached max attempts
 ```
 
+## Tests
+
+Run the local scheduler/config tests with:
+
+```bash
+~/venv/bin/python -m unittest discover -s tests -v
+```
+
+The tests cover due-window selection, `--job-index` sharding, past-window skipping,
+deterministic ordering, and the 10-year Sunday config containing separate `07:00`
+and `08:00` entries rather than fallback lists.
+
 ## Current Live Booking Cron Command
 
 ```bash

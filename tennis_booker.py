@@ -1125,6 +1125,39 @@ def expand_config_jobs(config: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(jobs, key=lambda job: (job["start_at"], job["date"], job["name"], job["preferred_starts"]))
 
 
+def select_config_jobs(
+    jobs: list[dict[str, Any]],
+    now: dt.datetime,
+    due_window_seconds: int,
+    job_index: int | None = None,
+) -> dict[str, list[dict[str, Any]] | int]:
+    pending_jobs = []
+    skipped_jobs = []
+    future_jobs = []
+    due_by = now + dt.timedelta(seconds=due_window_seconds) if due_window_seconds else None
+    for job in jobs:
+        comparable_now = now.astimezone(job["open_at"].tzinfo)
+        if job["open_at"] <= comparable_now:
+            skipped_jobs.append(job)
+        elif due_by and job["start_at"] > due_by.astimezone(job["start_at"].tzinfo):
+            future_jobs.append(job)
+        else:
+            pending_jobs.append(job)
+
+    pending_before_shard = len(pending_jobs)
+    if job_index is not None:
+        if job_index < 0:
+            raise SystemExit("--job-index must be 0 or greater")
+        pending_jobs = pending_jobs[job_index : job_index + 1]
+
+    return {
+        "pending": pending_jobs,
+        "skipped": skipped_jobs,
+        "future": future_jobs,
+        "pending_before_shard": pending_before_shard,
+    }
+
+
 def attempt_once(
     session: requests.Session,
     booking_date: str,
@@ -1429,18 +1462,12 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     use_color = not args.no_color
     jobs = expand_config_jobs(config)
     now = dt.datetime.now().astimezone()
-    pending_jobs = []
-    skipped_jobs = []
-    future_jobs = []
     due_by = now + dt.timedelta(seconds=args.due_window_seconds) if args.due_window_seconds else None
-    for job in jobs:
-        comparable_now = now.astimezone(job["open_at"].tzinfo)
-        if job["open_at"] <= comparable_now:
-            skipped_jobs.append(job)
-        elif due_by and job["start_at"] > due_by.astimezone(job["start_at"].tzinfo):
-            future_jobs.append(job)
-        else:
-            pending_jobs.append(job)
+    selection = select_config_jobs(jobs, now, args.due_window_seconds, args.job_index)
+    pending_jobs = selection["pending"]
+    skipped_jobs = selection["skipped"]
+    future_jobs = selection["future"]
+    unsharded_job_count = selection["pending_before_shard"]
 
     for job in skipped_jobs:
         print(
@@ -1460,18 +1487,13 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
         for job in jobs:
             job["validate"] = True
 
-    unsharded_job_count = len(jobs)
     if args.job_index is not None:
-        if args.job_index < 0:
-            raise SystemExit("--job-index must be 0 or greater")
-        selected_job = jobs[args.job_index : args.job_index + 1]
         print(
             colorize("Job shard selected", Style.CYAN, use_color)
             + f" job_index={args.job_index} pending_before_shard={unsharded_job_count} "
-            f"selected={len(selected_job)}",
+            f"selected={len(jobs)}",
             flush=True,
         )
-        jobs = selected_job
 
     print(
         colorize(f"Loaded {len(jobs)} pending booking job(s)", Style.BOLD + Style.CYAN, use_color)
