@@ -221,6 +221,28 @@ def format_booking_start_message(job: dict[str, Any]) -> str:
     )
 
 
+def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime) -> str:
+    lines = [
+        "<b>🎾 Bookings Due Tonight</b>",
+        f"Run Date: {html.escape(display_booking_date(now.date().isoformat()))}",
+        f"Count: {len(jobs)}",
+    ]
+    for index, job in enumerate(jobs, 1):
+        starts = list(job["preferred_starts"])
+        start_time = str(starts[0] if starts else "")
+        parsed_start = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(start_time))
+        end_time = (parsed_start + dt.timedelta(hours=1)).time().isoformat()
+        lines.extend(
+            [
+                "",
+                f"{index}. {html.escape(str(job['name']))}",
+                f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
+                f"Date: {html.escape(display_booking_date(str(job['date'])))}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def format_booking_result_message(
     succeeded: bool,
     job: dict[str, Any],
@@ -1263,6 +1285,37 @@ def select_config_jobs(
     }
 
 
+def select_jobs_due_today(jobs: list[dict[str, Any]], now: dt.datetime) -> list[dict[str, Any]]:
+    selected = []
+    for job in jobs:
+        comparable_now = now.astimezone(job["start_at"].tzinfo)
+        end_of_day = comparable_now.replace(hour=23, minute=59, second=59, microsecond=999999)
+        if comparable_now < job["start_at"] <= end_of_day:
+            selected.append(job)
+    return selected
+
+
+def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    use_color = not args.no_color
+    now = dt.datetime.now().astimezone()
+    jobs = select_jobs_due_today(expand_config_jobs(config), now)
+    print(
+        colorize("Due tonight notification", Style.CYAN, use_color)
+        + f" now={now.isoformat(timespec='seconds')} count={len(jobs)}",
+        flush=True,
+    )
+    for job in jobs:
+        print(
+            colorize("Due tonight job", Style.CYAN, use_color)
+            + f" name={job['name']} date={job['date']} starts={list(job['preferred_starts'])} "
+            f"open_at={job['open_at'].isoformat(timespec='seconds')}",
+            flush=True,
+        )
+    if jobs:
+        notify_telegram("booking", format_tonight_jobs_message(jobs, now), args.no_color, parse_mode="HTML")
+    return 0
+
+
 def attempt_once(
     session: requests.Session,
     booking_date: str,
@@ -1888,6 +1941,7 @@ def main() -> int:
     )
     parser.add_argument("--validate", action="store_true", help="POST validation when a slot is available.")
     parser.add_argument("--book", action="store_true", help="Actually confirm the booking.")
+    parser.add_argument("--notify-due-tonight", action="store_true", help="In config mode, send a Telegram summary of jobs whose booking opens later today, then exit.")
     parser.add_argument(
         "--job-index",
         type=int,
@@ -1949,7 +2003,10 @@ def main() -> int:
         base_config = load_config(args.config)
         facilities_config = load_config(args.facilities_config) if args.facilities_config else None
         bookings_config = load_config(args.bookings_config) if args.bookings_config else None
-        return run_config(args, merge_config(base_config, facilities_config, bookings_config))
+        merged_config = merge_config(base_config, facilities_config, bookings_config)
+        if args.notify_due_tonight:
+            return run_due_tonight_notification(args, merged_config)
+        return run_config(args, merged_config)
 
     if not args.date and not args.show_booking_id and not args.cancel_booking_id:
         parser.error("--date is required unless --show-booking-id or --cancel-booking-id is used")

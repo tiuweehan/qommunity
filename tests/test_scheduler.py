@@ -112,6 +112,14 @@ class SchedulerSelectionTest(unittest.TestCase):
         self.assertEqual([job["date"] for job in selected["skipped"]], ["2026-07-23", "2026-07-23"])
         self.assertEqual(selected["pending"], [])
 
+    def test_jobs_due_today_selects_tonight_jobs(self) -> None:
+        selected = tb.select_jobs_due_today(self.jobs, now=self.at("2026-06-22T08:00:00"))
+        self.assertEqual([job["preferred_starts"] for job in selected], [("07:00:00",), ("08:00:00",)])
+
+    def test_jobs_due_today_skips_after_midnight(self) -> None:
+        selected = tb.select_jobs_due_today(self.jobs, now=self.at("2026-06-23T00:00:01"))
+        self.assertEqual(selected, [])
+
 
 class TenYearConfigTest(unittest.TestCase):
     def test_sunday_config_has_independent_7am_and_8am_entries(self) -> None:
@@ -162,6 +170,21 @@ class TelegramMessageTest(unittest.TestCase):
         self.assertNotIn("Opens:", message)
         self.assertNotIn("Starts:", message)
         self.assertNotIn("Booking Enabled:", message)
+
+    def test_tonight_jobs_message_lists_due_bookings(self) -> None:
+        jobs = tb.expand_config_jobs(sample_config())[:2]
+        now = dt.datetime.fromisoformat("2026-06-22T08:00:00+08:00")
+
+        message = tb.format_tonight_jobs_message(jobs, now)
+
+        self.assertIn("<b>🎾 Bookings Due Tonight</b>", message)
+        self.assertIn("Run Date: 2026-06-22 (Mon)", message)
+        self.assertIn("Count: 2", message)
+        self.assertIn("1. Tennis Court 3", message)
+        self.assertIn("Slot: 07:00 AM to 08:00 AM", message)
+        self.assertIn("2. Tennis Court 3", message)
+        self.assertIn("Slot: 08:00 AM to 09:00 AM", message)
+        self.assertIn("Date: 2026-07-23 (Thu)", message)
 
     def test_success_message_includes_timeline_and_booking_id(self) -> None:
         job = tb.expand_config_jobs(sample_config())[0]

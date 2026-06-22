@@ -158,6 +158,10 @@ Token expiry and token reloads
 --book
   Actually confirm bookings. Without this, scheduler config stays dry-run unless book=true in config.
 
+--notify-due-tonight
+  In config mode, send a Telegram summary of jobs whose probe start is later today, then exit.
+  This is used by the 08:00 daily reminder cron and does not call the Qommunity API.
+
 --job-index N
   In config mode, run only the Nth pending job after sorting. 0-based. Use this for cron sharding.
   For example, two cron invocations with --job-index 0 and --job-index 1 can book two independent
@@ -203,6 +207,7 @@ Notification behavior:
 ```text
 OTP login started/succeeded/failed -> Tennis Debug
 Booking cron started -> Tennis Debug
+08:00 due-tonight summary -> Tennis Booking
 Due booking about to run -> Tennis Booking
 Booking succeeded/failed after polling -> Tennis Booking
 ```
@@ -508,9 +513,10 @@ Run the local scheduler/config tests with:
 ~/venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests cover due-window selection, `--job-index` sharding, past-window skipping,
-deterministic ordering, and the 10-year Sunday config containing separate `07:00`
-and `08:00` entries rather than fallback lists.
+The tests cover due-window selection, 08:00 due-tonight reminder selection,
+`--job-index` sharding, past-window skipping, deterministic ordering, and the
+10-year Sunday config containing separate `07:00` and `08:00` entries rather
+than fallback lists.
 
 ## Current Live Booking Cron Command
 
