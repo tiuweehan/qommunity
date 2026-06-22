@@ -206,6 +206,24 @@ def display_booking_date(value: str) -> str:
     return f"{parsed.isoformat()} ({parsed.strftime('%a')})"
 
 
+def format_booking_start_message(job: dict[str, Any]) -> str:
+    starts = list(job["preferred_starts"])
+    start_time = str(starts[0] if starts else "")
+    parsed_start = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(start_time))
+    end_time = (parsed_start + dt.timedelta(hours=1)).time().isoformat()
+    return "\n".join(
+        [
+            "<b>🎾 Booking About To Run</b>",
+            f"Facility: {html.escape(str(job['name']))}",
+            f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
+            f"Date: {html.escape(display_booking_date(str(job['date'])))}",
+            f"Opens: {html.escape(display_clock(job['open_at']))}",
+            f"Starts: {html.escape(display_clock(job['start_at']))}",
+            f"Booking Enabled: {'Yes' if job['book'] else 'No'}",
+        ]
+    )
+
+
 def format_booking_result_message(
     succeeded: bool,
     job: dict[str, Any],
@@ -1679,7 +1697,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             f"book={job['book']}",
             flush=True,
         )
-        notify_telegram("booking", format_job_message("Booking about to run", job), args.no_color)
+        notify_telegram("booking", format_booking_start_message(job), args.no_color, parse_mode="HTML")
 
         now = dt.datetime.now(job["start_at"].tzinfo)
         if now < job["start_at"]:
