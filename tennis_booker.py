@@ -263,6 +263,18 @@ def format_booking_result_message(
     return "\n".join(lines)
 
 
+def format_otp_login_message(prefix: str, mode: str, contact: str, at: dt.datetime, otp: str = "") -> str:
+    lines = [
+        prefix,
+        f"mode: {mode}",
+        f"contact: {contact}",
+    ]
+    if otp:
+        lines.append(f"otp: {otp}")
+    lines.append(f"at: {at.isoformat(timespec='seconds')}")
+    return "\n".join(lines)
+
+
 class ApiError(RuntimeError):
     def __init__(self, message: str, status_code: int, body: Any):
         super().__init__(message)
@@ -635,14 +647,7 @@ def run_login(args: argparse.Namespace) -> int:
         )
     notify_telegram(
         "debug",
-        "\n".join(
-            [
-                "OTP login started",
-                f"mode: {args.login}",
-                f"contact: {args.auth_contact}",
-                f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
-            ]
-        ),
+        format_otp_login_message("OTP login started", args.login, args.auth_contact, dt.datetime.now().astimezone()),
         args.no_color,
     )
     session = make_base_session()
@@ -665,6 +670,11 @@ def run_login(args: argparse.Namespace) -> int:
         otp = obtain_otp(args, otp_requested_at)
         if not otp:
             raise RuntimeError("OTP is required")
+        notify_telegram(
+            "debug",
+            format_otp_login_message("OTP received", args.login, args.auth_contact, dt.datetime.now().astimezone(), otp=otp),
+            args.no_color,
+        )
 
         print(colorize("Auth token exchange start", Style.BLUE, not args.no_color), flush=True)
         auth_data = request_json(session, "POST", auth_url("generatetoken"), json=auth_payload(args, otp=otp))

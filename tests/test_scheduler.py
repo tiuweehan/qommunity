@@ -132,6 +132,24 @@ class TenYearConfigTest(unittest.TestCase):
 
 
 class TelegramMessageTest(unittest.TestCase):
+    def test_otp_message_can_include_otp(self) -> None:
+        at = dt.datetime.fromisoformat("2026-06-21T22:05:25+08:00")
+
+        message = tb.format_otp_login_message("OTP received", "email", "deantiu56@gmail.com", at, otp="123456")
+
+        self.assertEqual(
+            message,
+            "\n".join(
+                [
+                    "OTP received",
+                    "mode: email",
+                    "contact: deantiu56@gmail.com",
+                    "otp: 123456",
+                    "at: 2026-06-21T22:05:25+08:00",
+                ]
+            ),
+        )
+
     def test_start_message_is_human_readable(self) -> None:
         job = tb.expand_config_jobs(sample_config())[1]
 
