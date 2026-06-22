@@ -182,12 +182,13 @@ class TelegramMessageTest(unittest.TestCase):
     def test_start_message_is_human_readable(self) -> None:
         job = tb.expand_config_jobs(sample_config())[1]
 
-        message = tb.format_booking_start_message(job)
+        message = tb.format_booking_start_message(job, job_index=1)
 
         self.assertIn("<b>🎾 Booking About To Run</b>", message)
         self.assertIn("Facility: Tennis Court 3", message)
         self.assertIn("Slot: 08:00 AM to 09:00 AM", message)
         self.assertIn("Date: 2026-07-23 (Thu)", message)
+        self.assertIn("Job: 1", message)
         self.assertNotIn("Opens:", message)
         self.assertNotIn("Starts:", message)
         self.assertNotIn("Booking Enabled:", message)
@@ -229,12 +230,13 @@ class TelegramMessageTest(unittest.TestCase):
             "booking_id": "e9c4fc0e-50b6-416b-98ba-6354f9581297",
         }
 
-        message = tb.format_booking_result_message(True, job, report, attempts=3)
+        message = tb.format_booking_result_message(True, job, report, attempts=3, job_index=0)
 
         self.assertIn("<b>✅ Booking Succeeded</b>", message)
         self.assertIn("Facility: Tennis Court 3", message)
         self.assertIn("Slot: 07:00 AM to 08:00 AM", message)
         self.assertIn("Date: 2026-07-23 (Thu)", message)
+        self.assertIn("Job: 0", message)
         self.assertIn("Checks: 3", message)
         self.assertIn("  - 23:59:59.004: Not Yet Open", message)
         self.assertIn("  - 00:00:00.227: Available", message)
@@ -253,9 +255,11 @@ class TelegramMessageTest(unittest.TestCase):
             {"checks": [], "timed_out": False},
             attempts=1,
             failure_reason="slot is already full",
+            job_index=1,
         )
 
         self.assertIn("<b>❌ Booking Failed</b>", message)
+        self.assertIn("Job: 1", message)
         self.assertIn("Failed Reason: slot is already full", message)
 
 

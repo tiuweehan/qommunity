@@ -206,19 +206,20 @@ def display_booking_date(value: str) -> str:
     return f"{parsed.isoformat()} ({parsed.strftime('%a')})"
 
 
-def format_booking_start_message(job: dict[str, Any]) -> str:
+def format_booking_start_message(job: dict[str, Any], job_index: int | None = None) -> str:
     starts = list(job["preferred_starts"])
     start_time = str(starts[0] if starts else "")
     parsed_start = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(start_time))
     end_time = (parsed_start + dt.timedelta(hours=1)).time().isoformat()
-    return "\n".join(
-        [
-            "<b>🎾 Booking About To Run</b>",
-            f"Facility: {html.escape(str(job['name']))}",
-            f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
-            f"Date: {html.escape(display_booking_date(str(job['date'])))}",
-        ]
-    )
+    lines = [
+        "<b>🎾 Booking About To Run</b>",
+        f"Facility: {html.escape(str(job['name']))}",
+        f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
+        f"Date: {html.escape(display_booking_date(str(job['date'])))}",
+    ]
+    if job_index is not None:
+        lines.append(f"Job: {job_index}")
+    return "\n".join(lines)
 
 
 def actual_advance_days(job: dict[str, Any]) -> int:
@@ -273,6 +274,7 @@ def format_booking_result_message(
     report: dict[str, Any],
     attempts: int,
     failure_reason: str = "",
+    job_index: int | None = None,
 ) -> str:
     starts = list(job["preferred_starts"])
     start_time = str(report.get("slot_start") or (starts[0] if starts else ""))
@@ -288,8 +290,10 @@ def format_booking_result_message(
         f"Facility: {html.escape(str(job['name']))}",
         f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
         f"Date: {html.escape(display_booking_date(str(job['date'])))}",
-        f"Checks: {attempts}",
     ]
+    if job_index is not None:
+        lines.append(f"Job: {job_index}")
+    lines.append(f"Checks: {attempts}")
     for check in report.get("checks", []):
         lines.append(f"  - {html.escape(display_clock(check.get('at')))}: {html.escape(str(check.get('status') or '-'))}")
 
@@ -1837,6 +1841,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     failures = 0
 
     for i, job in enumerate(jobs, 1):
+        telegram_job_index = args.job_index if args.job_index is not None else i - 1
         print(
             colorize(f"Job {i}/{len(jobs)}", Style.BOLD + Style.MAGENTA, use_color)
             + f" name={job['name']} facility_id={job['facility_id']} "
@@ -1846,7 +1851,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             f"book={job['book']}",
             flush=True,
         )
-        notify_telegram("booking", format_booking_start_message(job), args.no_color, parse_mode="HTML")
+        notify_telegram("booking", format_booking_start_message(job, job_index=telegram_job_index), args.no_color, parse_mode="HTML")
 
         now = dt.datetime.now(job["start_at"].tzinfo)
         if now < job["start_at"]:
@@ -1946,6 +1951,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                     job,
                     report if isinstance(report, dict) else {},
                     attempts,
+                    job_index=telegram_job_index,
                 ),
                 args.no_color,
                 parse_mode="HTML",
@@ -1960,6 +1966,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                     report if isinstance(report, dict) else {},
                     attempts=attempts,
                     failure_reason=(failure_reason or "slot was not booked"),
+                    job_index=telegram_job_index,
                 ),
                 args.no_color,
                 parse_mode="HTML",
