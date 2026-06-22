@@ -139,6 +139,7 @@ class SchedulerSelectionTest(unittest.TestCase):
         self.assertEqual(updated["open_at"].isoformat(timespec="seconds"), "2026-06-23T00:00:00+08:00")
         self.assertEqual(updated["start_at"].isoformat(timespec="seconds"), "2026-06-22T23:59:59+08:00")
         self.assertEqual(updated["due_source"], "earliest_not_yet_open")
+        self.assertEqual(tb.actual_advance_days(updated), 30)
 
 
 class TenYearConfigTest(unittest.TestCase):
@@ -195,15 +196,19 @@ class TelegramMessageTest(unittest.TestCase):
         jobs = tb.expand_config_jobs(sample_config())[:2]
         now = dt.datetime.fromisoformat("2026-06-22T08:00:00+08:00")
 
-        message = tb.format_tonight_jobs_message(jobs, now)
+        message = tb.format_tonight_jobs_message(jobs, now, auth_ok=True)
 
         self.assertIn("<b>📅 Bookings Due Tonight</b>", message)
         self.assertIn("Run Date: 2026-06-22 (Mon)", message)
         self.assertIn("Count: 2", message)
+        self.assertIn("Auth: ✅", message)
+        self.assertIn("Advance: 30 days", message)
         self.assertIn("1. Tennis Court 3", message)
         self.assertIn("Slot: 07:00 AM to 08:00 AM", message)
+        self.assertIn("Job: 0", message)
         self.assertIn("2. Tennis Court 3", message)
         self.assertIn("Slot: 08:00 AM to 09:00 AM", message)
+        self.assertIn("Job: 1", message)
         self.assertIn("Date: 2026-07-23 (Thu)", message)
 
     def test_success_message_includes_timeline_and_booking_id(self) -> None:

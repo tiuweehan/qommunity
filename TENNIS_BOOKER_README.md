@@ -213,6 +213,14 @@ Due booking about to run -> Tennis Booking
 Booking succeeded/failed after polling -> Tennis Booking
 ```
 
+The due-tonight summary includes:
+
+```text
+Auth      Current token is valid until at least one hour after the midnight booking attempt.
+Advance   Actual number of days between the API-backed opening date and the court booking date.
+Job       Cron shard index that will handle the booking, e.g. --job-index 0 or --job-index 1.
+```
+
 `booking_base_config.json` contains reusable defaults:
 
 ```json

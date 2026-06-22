@@ -221,11 +221,34 @@ def format_booking_start_message(job: dict[str, Any]) -> str:
     )
 
 
-def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime) -> str:
+def actual_advance_days(job: dict[str, Any]) -> int:
+    booking_date = dt.date.fromisoformat(str(job["date"]))
+    open_date = job["open_at"].date()
+    return (booking_date - open_date).days
+
+
+def auth_valid_for_jobs(token: str, jobs: list[dict[str, Any]]) -> bool:
+    exp = token_expiry(token)
+    if not exp or not jobs:
+        return False
+    required_until = max(job["open_at"].astimezone(exp.tzinfo) for job in jobs) + dt.timedelta(hours=1)
+    return exp >= required_until
+
+
+def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime, auth_ok: bool | None = None) -> str:
+    advance_values = {actual_advance_days(job) for job in jobs}
+    if len(advance_values) == 1:
+        advance_text = f"{next(iter(advance_values))} days"
+    elif advance_values:
+        advance_text = "mixed"
+    else:
+        advance_text = "-"
     lines = [
         "<b>📅 Bookings Due Tonight</b>",
         f"Run Date: {html.escape(display_booking_date(now.date().isoformat()))}",
         f"Count: {len(jobs)}",
+        f"Auth: {'✅' if auth_ok else '❌'}",
+        f"Advance: {html.escape(advance_text)}",
     ]
     for index, job in enumerate(jobs, 1):
         starts = list(job["preferred_starts"])
@@ -238,6 +261,7 @@ def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime) ->
                 f"{index}. {html.escape(str(job['name']))}",
                 f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
                 f"Date: {html.escape(display_booking_date(str(job['date'])))}",
+                f"Job: {index - 1}",
             ]
         )
     return "\n".join(lines)
@@ -1360,11 +1384,12 @@ def select_jobs_for_earliest_not_yet_open_dates(
 def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any]) -> int:
     use_color = not args.no_color
     now = dt.datetime.now().astimezone()
-    session, _, _ = load_session(args)
+    session, token, _ = load_session(args)
     jobs = select_jobs_due_today(select_jobs_for_earliest_not_yet_open_dates(session, expand_config_jobs(config), now, use_color), now)
+    auth_ok = auth_valid_for_jobs(token, jobs)
     print(
         colorize("Due tonight notification", Style.CYAN, use_color)
-        + f" now={now.isoformat(timespec='seconds')} count={len(jobs)}",
+        + f" now={now.isoformat(timespec='seconds')} count={len(jobs)} auth_ok={auth_ok}",
         flush=True,
     )
     for job in jobs:
@@ -1375,7 +1400,7 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
             flush=True,
         )
     if jobs:
-        notify_telegram("booking", format_tonight_jobs_message(jobs, now), args.no_color, parse_mode="HTML")
+        notify_telegram("booking", format_tonight_jobs_message(jobs, now, auth_ok=auth_ok), args.no_color, parse_mode="HTML")
     return 0
 
 
