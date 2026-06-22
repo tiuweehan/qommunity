@@ -217,9 +217,6 @@ def format_booking_start_message(job: dict[str, Any]) -> str:
             f"Facility: {html.escape(str(job['name']))}",
             f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
             f"Date: {html.escape(display_booking_date(str(job['date'])))}",
-            f"Opens: {html.escape(display_clock(job['open_at']))}",
-            f"Starts: {html.escape(display_clock(job['start_at']))}",
-            f"Booking Enabled: {'Yes' if job['book'] else 'No'}",
         ]
     )
 

@@ -141,9 +141,9 @@ class TelegramMessageTest(unittest.TestCase):
         self.assertIn("Facility: Tennis Court 3", message)
         self.assertIn("Slot: 08:00 AM to 09:00 AM", message)
         self.assertIn("Date: 2026-07-23 (Thu)", message)
-        self.assertIn("Opens: 00:00:00.000", message)
-        self.assertIn("Starts: 23:59:59.000", message)
-        self.assertIn("Booking Enabled: No", message)
+        self.assertNotIn("Opens:", message)
+        self.assertNotIn("Starts:", message)
+        self.assertNotIn("Booking Enabled:", message)
 
     def test_success_message_includes_timeline_and_booking_id(self) -> None:
         job = tb.expand_config_jobs(sample_config())[0]
