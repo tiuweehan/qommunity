@@ -16,6 +16,34 @@
     },
     {
       "facility": "tennis_court_3",
+      "date": "2026-07-24",
+      "preferred_starts": [
+        "07:00:00"
+      ]
+    },
+    {
+      "facility": "tennis_court_3",
+      "date": "2026-07-24",
+      "preferred_starts": [
+        "08:00:00"
+      ]
+    },
+    {
+      "facility": "tennis_court_3",
+      "date": "2026-07-25",
+      "preferred_starts": [
+        "07:00:00"
+      ]
+    },
+    {
+      "facility": "tennis_court_3",
+      "date": "2026-07-25",
+      "preferred_starts": [
+        "08:00:00"
+      ]
+    },
+    {
+      "facility": "tennis_court_3",
       "date": "2026-07-26",
       "preferred_starts": [
         "07:00:00"
