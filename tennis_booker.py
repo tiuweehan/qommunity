@@ -804,7 +804,7 @@ def confirm_booking(
         "paymentMethod": payment_method,
         "timeSlots": [{"timeSlotId": slot_id}],
     }
-    timeout = float(os.environ.get("QOMMUNITY_BOOKING_CONFIRM_TIMEOUT_SECONDS", "360"))
+    timeout = float(os.environ.get("QOMMUNITY_BOOKING_CONFIRM_TIMEOUT_SECONDS", "30"))
     return request_json(session, "POST", facility_url(facility_id, booking_date), json=payload, timeout=timeout)
 
 
