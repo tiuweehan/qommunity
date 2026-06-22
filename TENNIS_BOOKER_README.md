@@ -211,6 +211,7 @@ Booking cron started -> Tennis Debug
 08:00 due-tonight summary -> Tennis Booking
 Due booking about to run -> Tennis Booking
 Booking succeeded/failed after polling -> Tennis Booking
+Unhandled exceptions and caught job/CLI exceptions -> Tennis Debug
 ```
 
 The due-tonight summary includes:

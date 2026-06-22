@@ -170,6 +170,29 @@ def notify_telegram(kind: str, text: str, no_color: bool = False, parse_mode: st
         )
 
 
+def format_exception_debug_message(title: str, exc: BaseException, extra: str = "") -> str:
+    trace = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    lines = [
+        title,
+        f"type: {type(exc).__name__}",
+        f"error: {exc}",
+        f"cwd: {Path.cwd()}",
+        f"argv: {sys.argv!r}",
+        f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+    ]
+    if extra:
+        lines.append(extra)
+    lines.extend(["traceback:", trace])
+    message = "\n".join(lines)
+    if len(message) > 3900:
+        message = message[:3900] + "\n...[truncated]"
+    return message
+
+
+def notify_exception(title: str, exc: BaseException, no_color: bool = False, extra: str = "") -> None:
+    notify_telegram("debug", format_exception_debug_message(title, exc, extra), no_color)
+
+
 def format_job_message(prefix: str, job: dict[str, Any], attempts: int | None = None, extra: str = "") -> str:
     lines = [
         prefix,
@@ -1938,6 +1961,12 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                 raise
             except Exception as exc:
                 failure_reason = f"{type(exc).__name__}: {exc}"
+                notify_exception(
+                    "Booking job exception",
+                    exc,
+                    args.no_color,
+                    extra=f"job: {job['name']} date={job['date']} attempts={attempts}",
+                )
                 print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR job={job['name']} {exc}", file=sys.stderr, flush=True)
                 traceback.print_exc(file=sys.stderr)
 
@@ -2177,10 +2206,12 @@ def main() -> int:
             if outcome in {OUTCOME_FULL, OUTCOME_AMBIGUOUS_CONFIRM}:
                 return 1
         except ApiError as exc:
+            notify_exception("CLI API exception", exc, args.no_color, extra=f"date={args.date} attempt={attempts}")
             print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR {exc}", file=sys.stderr, flush=True)
         except KeyboardInterrupt:
             raise
         except Exception as exc:
+            notify_exception("CLI exception", exc, args.no_color, extra=f"date={args.date} attempt={attempts}")
             print(f"{dt.datetime.now().isoformat(timespec='seconds')} ERROR {exc}", file=sys.stderr, flush=True)
 
         if not args.watch:
@@ -2198,4 +2229,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        try:
+            load_env_file(os.environ.get("QOMMUNITY_ENV_FILE", DEFAULT_ENV_FILE))
+            notify_exception("Unhandled tennis_booker.py exception", exc)
+        finally:
+            raise

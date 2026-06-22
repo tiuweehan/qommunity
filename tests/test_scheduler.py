@@ -161,6 +161,20 @@ class TenYearConfigTest(unittest.TestCase):
 
 
 class TelegramMessageTest(unittest.TestCase):
+    def test_exception_debug_message_includes_traceback_context(self) -> None:
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            message = tb.format_exception_debug_message("Unhandled tennis_booker.py exception", exc, extra="job: test")
+
+        self.assertIn("Unhandled tennis_booker.py exception", message)
+        self.assertIn("type: RuntimeError", message)
+        self.assertIn("error: boom", message)
+        self.assertIn("argv:", message)
+        self.assertIn("job: test", message)
+        self.assertIn("traceback:", message)
+        self.assertIn("RuntimeError: boom", message)
+
     def test_otp_message_can_include_otp(self) -> None:
         at = dt.datetime.fromisoformat("2026-06-21T22:05:25+08:00")
 
