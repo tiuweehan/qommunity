@@ -196,13 +196,14 @@ class TelegramMessageTest(unittest.TestCase):
     def test_tonight_jobs_message_lists_due_bookings(self) -> None:
         jobs = tb.expand_config_jobs(sample_config())[:2]
         now = dt.datetime.fromisoformat("2026-06-22T08:00:00+08:00")
+        auth_expires_at = dt.datetime.fromisoformat("2026-06-30T09:12:34+08:00")
 
-        message = tb.format_tonight_jobs_message(jobs, now, auth_ok=True)
+        message = tb.format_tonight_jobs_message(jobs, now, auth_ok=True, auth_expires_at=auth_expires_at)
 
         self.assertIn("<b>📅 Bookings Due Tonight</b>", message)
         self.assertIn("Run Date: 2026-06-22 (Mon)", message)
         self.assertIn("Count: 2", message)
-        self.assertIn("Auth: ✅", message)
+        self.assertIn("Auth: 2026-06-30 09:12:34 ✅", message)
         self.assertIn("Advance: 30 days", message)
         self.assertIn("1. Tennis Court 3", message)
         self.assertIn("Slot: 07:00 AM to 08:00 AM", message)

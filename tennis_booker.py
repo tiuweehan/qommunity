@@ -236,7 +236,19 @@ def auth_valid_for_jobs(token: str, jobs: list[dict[str, Any]]) -> bool:
     return exp >= required_until
 
 
-def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime, auth_ok: bool | None = None) -> str:
+def format_auth_status(auth_expires_at: dt.datetime | None, auth_ok: bool | None) -> str:
+    icon = "✅" if auth_ok else "❌"
+    if not auth_expires_at:
+        return f"unknown {icon}"
+    return f"{auth_expires_at.astimezone().strftime('%Y-%m-%d %H:%M:%S')} {icon}"
+
+
+def format_tonight_jobs_message(
+    jobs: list[dict[str, Any]],
+    now: dt.datetime,
+    auth_ok: bool | None = None,
+    auth_expires_at: dt.datetime | None = None,
+) -> str:
     advance_values = {actual_advance_days(job) for job in jobs}
     if len(advance_values) == 1:
         advance_text = f"{next(iter(advance_values))} days"
@@ -248,7 +260,7 @@ def format_tonight_jobs_message(jobs: list[dict[str, Any]], now: dt.datetime, au
         "<b>📅 Bookings Due Tonight</b>",
         f"Run Date: {html.escape(display_booking_date(now.date().isoformat()))}",
         f"Count: {len(jobs)}",
-        f"Auth: {'✅' if auth_ok else '❌'}",
+        f"Auth: {html.escape(format_auth_status(auth_expires_at, auth_ok))}",
         f"Advance: {html.escape(advance_text)}",
     ]
     for index, job in enumerate(jobs, 1):
@@ -1390,6 +1402,7 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
     now = dt.datetime.now().astimezone()
     session, token, _ = load_session(args)
     jobs = select_jobs_due_today(select_jobs_for_earliest_not_yet_open_dates(session, expand_config_jobs(config), now, use_color), now)
+    auth_expires_at = token_expiry(token)
     auth_ok = auth_valid_for_jobs(token, jobs)
     print(
         colorize("Due tonight notification", Style.CYAN, use_color)
@@ -1404,7 +1417,12 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
             flush=True,
         )
     if jobs:
-        notify_telegram("booking", format_tonight_jobs_message(jobs, now, auth_ok=auth_ok), args.no_color, parse_mode="HTML")
+        notify_telegram(
+            "booking",
+            format_tonight_jobs_message(jobs, now, auth_ok=auth_ok, auth_expires_at=auth_expires_at),
+            args.no_color,
+            parse_mode="HTML",
+        )
     return 0
 
 
