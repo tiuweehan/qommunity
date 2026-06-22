@@ -131,5 +131,54 @@ class TenYearConfigTest(unittest.TestCase):
         self.assertTrue(all(starts_for_date == {"07:00:00", "08:00:00"} for starts_for_date in by_date.values()))
 
 
+class TelegramMessageTest(unittest.TestCase):
+    def test_success_message_includes_timeline_and_booking_id(self) -> None:
+        job = tb.expand_config_jobs(sample_config())[0]
+        tz = job["start_at"].tzinfo
+        report = {
+            "slot_start": "07:00:00",
+            "slot_end": "08:00:00",
+            "checks": [
+                {"at": dt.datetime(2026, 6, 22, 23, 59, 59, 4000, tzinfo=tz), "status": "Not Yet Open"},
+                {"at": dt.datetime(2026, 6, 22, 23, 59, 59, 557000, tzinfo=tz), "status": "Not Yet Open"},
+                {"at": dt.datetime(2026, 6, 23, 0, 0, 0, 227000, tzinfo=tz), "status": "Available"},
+            ],
+            "sent_at": dt.datetime(2026, 6, 23, 0, 0, 0, 227000, tzinfo=tz),
+            "ack_at": dt.datetime(2026, 6, 23, 0, 0, 35, 196000, tzinfo=tz),
+            "duration_seconds": 30.036,
+            "timed_out": True,
+            "booking_id": "e9c4fc0e-50b6-416b-98ba-6354f9581297",
+        }
+
+        message = tb.format_booking_result_message(True, job, report, attempts=3)
+
+        self.assertIn("<b>✅ Booking Succeeded</b>", message)
+        self.assertIn("Facility: Tennis Court 3", message)
+        self.assertIn("Slot: 07:00 AM to 08:00 AM", message)
+        self.assertIn("Date: 2026-07-23 (Thu)", message)
+        self.assertIn("Checks: 3", message)
+        self.assertIn("  - 23:59:59.004: Not Yet Open", message)
+        self.assertIn("  - 00:00:00.227: Available", message)
+        self.assertIn("Sent: 00:00:00.227", message)
+        self.assertIn("Acknowledged: 00:00:35.196", message)
+        self.assertIn("Duration: 30.036s", message)
+        self.assertIn("Timeout: Yes", message)
+        self.assertIn("Booking ID: e9c4fc0e-50b6-416b-98ba-6354f9581297", message)
+        self.assertNotIn("Failed Reason:", message)
+
+    def test_failure_message_includes_reason(self) -> None:
+        job = tb.expand_config_jobs(sample_config())[0]
+        message = tb.format_booking_result_message(
+            False,
+            job,
+            {"checks": [], "timed_out": False},
+            attempts=1,
+            failure_reason="slot is already full",
+        )
+
+        self.assertIn("<b>❌ Booking Failed</b>", message)
+        self.assertIn("Failed Reason: slot is already full", message)
+
+
 if __name__ == "__main__":
     unittest.main()

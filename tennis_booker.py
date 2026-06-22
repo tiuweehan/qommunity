@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import html
 import json
 import os
 import re
@@ -127,20 +128,23 @@ def telegram_chat_id(kind: str) -> str:
     return os.environ.get(key, "")
 
 
-def notify_telegram(kind: str, text: str, no_color: bool = False) -> None:
+def notify_telegram(kind: str, text: str, no_color: bool = False, parse_mode: str = "") -> None:
     token = os.environ.get("QOMMUNITY_TELEGRAM_TOKEN", "")
     chat_id = telegram_chat_id(kind)
     if not token or not chat_id:
         return
     started = time.monotonic()
     try:
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
         response = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            },
+            json=payload,
             timeout=10,
         )
         elapsed_ms = (time.monotonic() - started) * 1000
@@ -180,6 +184,67 @@ def format_job_message(prefix: str, job: dict[str, Any], attempts: int | None = 
         lines.append(f"attempts: {attempts}")
     if extra:
         lines.append(extra)
+    return "\n".join(lines)
+
+
+def display_time(value: str) -> str:
+    parsed = dt.time.fromisoformat(value)
+    hour = parsed.hour % 12 or 12
+    return f"{hour:02d}:{parsed.minute:02d} {'AM' if parsed.hour < 12 else 'PM'}"
+
+
+def display_clock(value: dt.datetime | None) -> str:
+    return value.strftime("%H:%M:%S.%f")[:-3] if value else "-"
+
+
+def display_duration(seconds: float | None) -> str:
+    return f"{seconds:.3f}s" if seconds is not None else "-"
+
+
+def display_booking_date(value: str) -> str:
+    parsed = dt.date.fromisoformat(value)
+    return f"{parsed.isoformat()} ({parsed.strftime('%a')})"
+
+
+def format_booking_result_message(
+    succeeded: bool,
+    job: dict[str, Any],
+    report: dict[str, Any],
+    attempts: int,
+    failure_reason: str = "",
+) -> str:
+    starts = list(job["preferred_starts"])
+    start_time = str(report.get("slot_start") or (starts[0] if starts else ""))
+    end_time = str(report.get("slot_end") or "")
+    if not end_time and start_time:
+        parsed_start = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(start_time))
+        end_time = (parsed_start + dt.timedelta(hours=1)).time().isoformat()
+
+    title = "Booking Succeeded" if succeeded else "Booking Failed"
+    icon = "✅" if succeeded else "❌"
+    lines = [
+        f"<b>{html.escape(icon + ' ' + title)}</b>",
+        f"Facility: {html.escape(str(job['name']))}",
+        f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
+        f"Date: {html.escape(display_booking_date(str(job['date'])))}",
+        f"Checks: {attempts}",
+    ]
+    for check in report.get("checks", []):
+        lines.append(f"  - {html.escape(display_clock(check.get('at')))}: {html.escape(str(check.get('status') or '-'))}")
+
+    lines.extend(
+        [
+            f"Sent: {html.escape(display_clock(report.get('sent_at')))}",
+            f"Acknowledged: {html.escape(display_clock(report.get('ack_at')))}",
+            f"Duration: {html.escape(display_duration(report.get('duration_seconds')))}",
+            f"Timeout: {'Yes' if report.get('timed_out') else 'No'}",
+        ]
+    )
+    booking_id = str(report.get("booking_id") or "")
+    if succeeded and booking_id:
+        lines.append(f"Booking ID: {html.escape(booking_id)}")
+    if not succeeded:
+        lines.append(f"Failed Reason: {html.escape(str(failure_reason or report.get('failure_reason') or 'slot was not booked'))}")
     return "\n".join(lines)
 
 
@@ -751,6 +816,21 @@ def preferred_slots(day: dict[str, Any], preferred_starts: tuple[str, ...]) -> l
     return [by_start[start] for start in preferred_starts if start in by_start]
 
 
+def status_for_report(day: dict[str, Any] | None, preferred_starts: tuple[str, ...], available: bool = False) -> str:
+    if available:
+        return "Available"
+    if not day:
+        return "Target date not returned"
+    slots = preferred_slots(day, preferred_starts)
+    if slots:
+        statuses = [str(slot.get("status") or "") for slot in slots if slot.get("status")]
+        if statuses and all(status == statuses[0] for status in statuses):
+            return statuses[0]
+        if statuses:
+            return ", ".join(statuses)
+    return str(day.get("status") or "Unavailable")
+
+
 def classify_unavailable(day: dict[str, Any] | None, preferred_starts: tuple[str, ...]) -> tuple[str, str]:
     if not day:
         return OUTCOME_RETRY, "target date not returned"
@@ -1168,6 +1248,7 @@ def attempt_once(
     do_book: bool,
 ) -> str:
     use_color = not getattr(session, "no_color", False)
+    report = getattr(session, "booking_report", None)
     attempt_started = dt.datetime.now().astimezone()
     print(
         colorize("Poll start", Style.MAGENTA, use_color)
@@ -1180,6 +1261,8 @@ def attempt_once(
     facility = data.get("facility") or {}
     day = get_date_entry(data, booking_date)
     if not day:
+        if isinstance(report, dict):
+            report.setdefault("checks", []).append({"at": dt.datetime.now().astimezone(), "status": status_for_report(None, preferred_starts)})
         print(
             colorize("Poll result", Style.YELLOW, use_color)
             + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
@@ -1189,15 +1272,18 @@ def attempt_once(
         return OUTCOME_RETRY
 
     slot, slots = find_preferred_slot(day, preferred_starts)
+    poll_finished = dt.datetime.now().astimezone()
     print(
         colorize("Poll result", Style.YELLOW, use_color)
-        + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
+        + f" at={poll_finished.isoformat(timespec='milliseconds')} "
         f"facility={facility.get('name')} date={booking_date} dayStatus={day.get('status')} "
         f"availability=\"{summarize_slots(slots, preferred_starts)}\"",
         flush=True,
     )
 
     if not slot:
+        if isinstance(report, dict):
+            report.setdefault("checks", []).append({"at": poll_finished, "status": status_for_report(day, preferred_starts)})
         outcome, reason = classify_unavailable(day, preferred_starts)
         print(
             colorize("Poll outcome", Style.RED if outcome == OUTCOME_FULL else Style.GRAY, use_color)
@@ -1208,6 +1294,10 @@ def attempt_once(
         return outcome
 
     slot_id = slot["id"]
+    if isinstance(report, dict):
+        report["slot_start"] = slot.get("startTime")
+        report["slot_end"] = slot.get("endTime")
+        report.setdefault("checks", []).append({"at": poll_finished, "status": status_for_report(day, preferred_starts, available=True)})
     print(
         colorize("Poll outcome", Style.GREEN, use_color)
         + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
@@ -1256,6 +1346,9 @@ def attempt_once(
             end_time=slot["endTime"],
         )
         if existing:
+            if isinstance(report, dict):
+                report["ack_at"] = dt.datetime.now().astimezone()
+                report["booking_id"] = existing.get("id")
             print(
                 colorize("Existing booking found before confirm", Style.YELLOW, use_color)
                 + f" booking_id={existing.get('id')} status={existing.get('bookingStatus')} "
@@ -1266,8 +1359,19 @@ def attempt_once(
             return OUTCOME_BOOKED
 
     try:
+        confirm_started = dt.datetime.now().astimezone()
+        confirm_start_perf = time.perf_counter()
+        if isinstance(report, dict):
+            report["sent_at"] = confirm_started
+            report["timed_out"] = False
         result = confirm_booking(session, booking_date, facility_id, slot_id, payment_method)
     except requests.RequestException as exc:
+        confirm_finished = dt.datetime.now().astimezone()
+        if isinstance(report, dict):
+            report["ack_at"] = confirm_finished
+            report["duration_seconds"] = time.perf_counter() - confirm_start_perf
+            report["timed_out"] = isinstance(exc, requests.Timeout)
+            report["failure_reason"] = f"{type(exc).__name__}: {exc}"
         print(
             colorize("Booking confirm timed out; rechecking availability before any retry", Style.YELLOW, use_color)
             + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
@@ -1282,6 +1386,9 @@ def attempt_once(
             end_time=slot["endTime"],
         )
         if existing:
+            if isinstance(report, dict):
+                report["ack_at"] = dt.datetime.now().astimezone()
+                report["booking_id"] = existing.get("id")
             print(
                 colorize("Booking confirm timeout resolved by upcoming booking", Style.YELLOW, use_color)
                 + f" booking_id={existing.get('id')} status={existing.get('bookingStatus')}",
@@ -1300,6 +1407,8 @@ def attempt_once(
             flush=True,
         )
         if outcome == OUTCOME_FULL:
+            if isinstance(report, dict):
+                report["failure_reason"] = "slot became full but no matching upcoming booking was found"
             print(
                 colorize("Booking confirm timeout treated as failed", Style.RED, use_color)
                 + " reason=slot_became_full_but_no_matching_upcoming_booking",
@@ -1311,8 +1420,16 @@ def attempt_once(
             + f" outcome={outcome} reason={reason}",
             flush=True,
         )
+        if isinstance(report, dict):
+            report["failure_reason"] = "confirm request outcome ambiguous; not retried to avoid duplicate booking"
         return OUTCOME_AMBIGUOUS_CONFIRM
     except ApiError as exc:
+        confirm_finished = dt.datetime.now().astimezone()
+        if isinstance(report, dict):
+            report["ack_at"] = confirm_finished
+            report["duration_seconds"] = time.perf_counter() - confirm_start_perf
+            report["timed_out"] = False
+            report["failure_reason"] = f"HTTP {exc.status_code}: {exc.body}"
         if exc.status_code != 422:
             raise
         print(
@@ -1329,6 +1446,9 @@ def attempt_once(
             end_time=slot["endTime"],
         )
         if existing:
+            if isinstance(report, dict):
+                report["ack_at"] = dt.datetime.now().astimezone()
+                report["booking_id"] = existing.get("id")
             print(
                 colorize("Booking confirm rejection resolved by upcoming booking", Style.YELLOW, use_color)
                 + f" booking_id={existing.get('id')} status={existing.get('bookingStatus')}",
@@ -1346,8 +1466,15 @@ def attempt_once(
             f"availability=\"{summarize_slots(recheck_slots, preferred_starts)}\"",
             flush=True,
         )
+        if isinstance(report, dict):
+            report["failure_reason"] = reason
         return outcome
+    if isinstance(report, dict):
+        report["ack_at"] = dt.datetime.now().astimezone()
+        report["duration_seconds"] = time.perf_counter() - confirm_start_perf
     result_payload = result.get("data") or {}
+    if isinstance(report, dict):
+        report["booking_id"] = result_payload.get("id")
     print(
         colorize("Booking confirm end", Style.GREEN, use_color)
         + f" at={dt.datetime.now().astimezone().isoformat(timespec='milliseconds')} "
@@ -1567,6 +1694,7 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
         attempts = 0
         job_done = False
         failure_reason = ""
+        session.booking_report = {"checks": []}
         while True:
             attempts += 1
             print(
@@ -1643,26 +1771,31 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
             time.sleep(job["interval"])
 
         if job_done:
+            report = getattr(session, "booking_report", {})
             notify_telegram(
                 "booking",
-                format_job_message(
-                    "Booking succeeded" if job["book"] else "Booking dry-run completed",
+                format_booking_result_message(
+                    True,
                     job,
-                    attempts=attempts,
-                    extra=f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
+                    report if isinstance(report, dict) else {},
+                    attempts,
                 ),
                 args.no_color,
+                parse_mode="HTML",
             )
         else:
+            report = getattr(session, "booking_report", {})
             notify_telegram(
                 "booking",
-                format_job_message(
-                    "Booking failed",
+                format_booking_result_message(
+                    False,
                     job,
+                    report if isinstance(report, dict) else {},
                     attempts=attempts,
-                    extra=(failure_reason or "slot was not booked"),
+                    failure_reason=(failure_reason or "slot was not booked"),
                 ),
                 args.no_color,
+                parse_mode="HTML",
             )
 
     return 1 if failures else 0
