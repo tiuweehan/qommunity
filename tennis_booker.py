@@ -1301,11 +1301,11 @@ def attempt_once(
         )
         if outcome == OUTCOME_FULL:
             print(
-                colorize("Booking confirm timeout treated as terminal", Style.YELLOW, use_color)
-                + " reason=slot_became_full_after_confirm_request",
+                colorize("Booking confirm timeout treated as failed", Style.RED, use_color)
+                + " reason=slot_became_full_but_no_matching_upcoming_booking",
                 flush=True,
             )
-            return OUTCOME_BOOKED
+            return OUTCOME_FULL
         print(
             colorize("Booking confirm outcome ambiguous; not retrying confirm", Style.RED, use_color)
             + f" outcome={outcome} reason={reason}",
