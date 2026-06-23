@@ -25,7 +25,7 @@ class FakeResponse:
 class FakeSession:
     no_color = True
 
-    def __init__(self, responses: list[dict]) -> None:
+    def __init__(self, responses: list[dict | Exception]) -> None:
         self.responses = list(responses)
         self.requests: list[tuple[str, str]] = []
 
@@ -33,7 +33,10 @@ class FakeSession:
         self.requests.append((method, url))
         if not self.responses:
             raise AssertionError(f"Unexpected request {method} {url}")
-        return FakeResponse(self.responses.pop(0))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return FakeResponse(response)
 
 
 def sample_config() -> dict:
@@ -354,6 +357,20 @@ class FinancialsTest(unittest.TestCase):
         )
 
         self.assertEqual(tb.fetch_booking_fee_from_history(session, job), Decimal("3.2700"))
+
+
+class AuthRetryTest(unittest.TestCase):
+    def test_auth_request_retries_timeouts(self) -> None:
+        session = FakeSession([tb.requests.Timeout("slow auth"), {"ok": True}])
+        original_sleep = tb.time.sleep
+        tb.time.sleep = lambda _seconds: None
+        try:
+            result = tb.auth_request_json(session, "POST", "https://example.invalid/auth", attempts=2, json={})
+        finally:
+            tb.time.sleep = original_sleep
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(len(session.requests), 2)
 
 
 if __name__ == "__main__":

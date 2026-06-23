@@ -48,6 +48,8 @@ DEFAULT_LOG_FILE = "tennis_booker.log"
 DEFAULT_OTP_REGEX = r"\b\d{4,8}\b"
 DEFAULT_ENV_FILE = ".env"
 DEFAULT_DUE_WINDOW_SECONDS = 120
+DEFAULT_AUTH_HTTP_TIMEOUT_SECONDS = 30.0
+DEFAULT_AUTH_REQUEST_ATTEMPTS = 3
 OUTCOME_RETRY = "retry"
 OUTCOME_BOOKED = "booked"
 OUTCOME_DRY_RUN_DONE = "dry_run_done"
@@ -759,6 +761,37 @@ def write_auth_file(path: str, auth_data: dict[str, Any], token: str) -> None:
     os.chmod(target, 0o600)
 
 
+def auth_request_json(
+    session: requests.Session,
+    method: str,
+    url: str,
+    *,
+    attempts: int = DEFAULT_AUTH_REQUEST_ATTEMPTS,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    timeout = float(os.environ.get("QOMMUNITY_AUTH_HTTP_TIMEOUT_SECONDS", str(DEFAULT_AUTH_HTTP_TIMEOUT_SECONDS)))
+    for attempt in range(1, attempts + 1):
+        try:
+            print(
+                colorize("Auth HTTP attempt", Style.BLUE, not getattr(session, "no_color", False))
+                + f" attempt={attempt}/{attempts} timeout={timeout:g}s",
+                flush=True,
+            )
+            return request_json(session, method, url, timeout=timeout, **kwargs)
+        except requests.Timeout:
+            if attempt >= attempts:
+                raise
+            sleep_for = min(2 ** (attempt - 1), 5)
+            print(
+                colorize("Auth HTTP timeout; retrying", Style.YELLOW, not getattr(session, "no_color", False))
+                + f" attempt={attempt}/{attempts} sleep={sleep_for}s",
+                flush=True,
+            )
+            time.sleep(sleep_for)
+
+    raise RuntimeError("unreachable auth retry state")
+
+
 def run_login(args: argparse.Namespace) -> int:
     apply_auth_config(args)
     if not args.auth_contact:
@@ -780,7 +813,7 @@ def run_login(args: argparse.Namespace) -> int:
             flush=True,
         )
         otp_requested_at = dt.datetime.now().astimezone()
-        request_result = request_json(session, "POST", auth_url("requesttoken"), json=auth_payload(args))
+        request_result = auth_request_json(session, "POST", auth_url("requesttoken"), json=auth_payload(args))
         print(
             colorize("Auth OTP request sent", Style.GREEN, not args.no_color)
             + f" userName={request_result.get('userName')} userId={request_result.get('userId')}",
@@ -797,7 +830,7 @@ def run_login(args: argparse.Namespace) -> int:
         )
 
         print(colorize("Auth token exchange start", Style.BLUE, not args.no_color), flush=True)
-        auth_data = request_json(session, "POST", auth_url("generatetoken"), json=auth_payload(args, otp=otp))
+        auth_data = auth_request_json(session, "POST", auth_url("generatetoken"), attempts=1, json=auth_payload(args, otp=otp))
         token = extract_auth_token(auth_data)
         write_auth_file(args.auth_file, auth_data, token)
         exp = token_expiry(token)

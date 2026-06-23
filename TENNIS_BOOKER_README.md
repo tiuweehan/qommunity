@@ -137,6 +137,10 @@ Token expiry and token reloads
 --otp-timeout-seconds N
   Seconds to wait for Worker OTP. Default: 180.
 
+QOMMUNITY_AUTH_HTTP_TIMEOUT_SECONDS
+  Per-request timeout for login auth endpoints. Default: 30. The pre-OTP request is retried
+  up to three times on timeout.
+
 --token TOKEN
   Use a fixed Bearer token instead of qommunity_auth.json or the flow file.
 
