@@ -17,6 +17,7 @@ import re
 import sys
 import time
 import traceback
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ DEFAULT_FLOW_FILE = "/tmp/qommunity-ipmitm-flows.mitm"
 DEFAULT_AUTH_FILE = "qommunity_auth.json"
 DEFAULT_AUTH_CONFIG_FILE = "auth_config.json"
 DEFAULT_BASE_CONFIG_FILE = "booking_base_config.json"
+DEFAULT_FACILITIES_CONFIG_FILE = "facilities.json"
+DEFAULT_BOOKINGS_CONFIG_FILE = "sunday_8am_bookings_10y.json"
 DEFAULT_CLIENT_ID = "fbc7149c8b3244ddb754c090918b7621.mtwpublicapp.com.ibase"
 DEFAULT_CA_BUNDLE = certifi.where()
 DEFAULT_MITMPROXY_CA = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
@@ -229,6 +232,22 @@ def display_booking_date(value: str) -> str:
     return f"{parsed.isoformat()} ({parsed.strftime('%a')})"
 
 
+def as_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def format_money(value: Any) -> str:
+    amount = as_decimal(value)
+    if amount is None:
+        return "-"
+    return f"${amount.quantize(Decimal('0.01'))}"
+
+
 def format_booking_start_message(job: dict[str, Any], job_index: int | None = None) -> str:
     starts = list(job["preferred_starts"])
     start_time = str(starts[0] if starts else "")
@@ -271,6 +290,7 @@ def format_tonight_jobs_message(
     now: dt.datetime,
     auth_ok: bool | None = None,
     auth_expires_at: dt.datetime | None = None,
+    credit_before: Decimal | None = None,
 ) -> str:
     advance_values = {actual_advance_days(job) for job in jobs}
     if len(advance_values) == 1:
@@ -279,12 +299,22 @@ def format_tonight_jobs_message(
         advance_text = "mixed"
     else:
         advance_text = "-"
+    known_fees = [as_decimal(job.get("fee")) for job in jobs]
+    total_fee = sum((fee for fee in known_fees if fee is not None), Decimal("0"))
+    credit_after = credit_before - total_fee if credit_before is not None else None
+    credit_ok = bool(
+        credit_after is not None
+        and credit_after >= Decimal("0")
+        and all(fee is not None for fee in known_fees)
+    )
+    credit_icon = "✅" if credit_ok else "❌"
     lines = [
         "<b>📅 Bookings Due Tonight</b>",
         f"Run Date: {html.escape(display_booking_date(now.date().isoformat()))}",
-        f"Count: {len(jobs)}",
         f"Auth: {html.escape(format_auth_status(auth_expires_at, auth_ok))}",
+        f"Credit: {html.escape(format_money(credit_before))} -> {html.escape(format_money(credit_after))} {credit_icon}",
         f"Advance: {html.escape(advance_text)}",
+        f"Count: {len(jobs)}",
     ]
     for index, job in enumerate(jobs, 1):
         starts = list(job["preferred_starts"])
@@ -297,6 +327,7 @@ def format_tonight_jobs_message(
                 f"{index}. {html.escape(str(job['name']))}",
                 f"Slot: {html.escape(display_time(start_time))} to {html.escape(display_time(end_time))}",
                 f"Date: {html.escape(display_booking_date(str(job['date'])))}",
+                f"Fee: {html.escape(format_money(job.get('fee')))}",
                 f"Job: {index - 1}",
             ]
         )
@@ -383,6 +414,10 @@ def booking_list_url(status: str = "Upcoming", page_number: int = 1, page_size: 
         f"{API_BASE}/portfolio/{PROPERTY_ID}/unit/{UNIT_ID}/booking"
         f"?pageNumber={page_number}&status={status}&subStatus=&startDate=&endDate=&pageSize={page_size}"
     )
+
+
+def estate_credit_url(page_number: int = 1) -> str:
+    return f"{API_BASE}/portfolio/{PROPERTY_ID}/unit/{UNIT_ID}/finance/estatecredit?pageNumber={page_number}"
 
 
 def facility_list_url() -> str:
@@ -1050,6 +1085,74 @@ def find_matching_upcoming_booking(
     return None
 
 
+def fetch_estate_credit_balance(session: requests.Session) -> Decimal | None:
+    data = request_json(session, "GET", estate_credit_url())
+    output = data.get("estateCreditOutput") if isinstance(data.get("estateCreditOutput"), dict) else {}
+    for value in (
+        output.get("totalBalance"),
+        output.get("balance"),
+        data.get("totalBalance"),
+        data.get("balance"),
+    ):
+        amount = as_decimal(value)
+        if amount is not None:
+            return amount
+
+    balances = output.get("estateCreditBalanceOutputs") or data.get("estateCreditBalanceOutputs") or []
+    for item in balances:
+        if isinstance(item, dict):
+            amount = as_decimal(item.get("balance"))
+            if amount is not None:
+                return amount
+    return None
+
+
+def item_matches_job_fee(item: dict[str, Any], job: dict[str, Any], start_time: str) -> bool:
+    if item.get("facilityId") and item.get("facilityId") != job.get("facility_id"):
+        return False
+    if item.get("facilityName") and str(item.get("facilityName")) != str(job.get("name")):
+        return False
+    slots = item.get("timeSlots") or []
+    return any(isinstance(slot, dict) and slot.get("startTime") == start_time for slot in slots)
+
+
+def fetch_booking_fee_from_history(session: requests.Session, job: dict[str, Any]) -> Decimal | None:
+    starts = list(job.get("preferred_starts") or [])
+    if not starts:
+        return None
+    start_time = str(starts[0])
+    statuses = os.environ.get("QOMMUNITY_FEE_SCAN_STATUSES", "Upcoming,Cancelled,Completed").split(",")
+    max_pages = int(os.environ.get("QOMMUNITY_FEE_SCAN_MAX_PAGES", "20"))
+    page_size = int(os.environ.get("QOMMUNITY_FEE_SCAN_PAGE_SIZE", "10"))
+    for status in [value.strip() for value in statuses if value.strip()]:
+        for page in range(1, max_pages + 1):
+            data = request_json(session, "GET", booking_list_url(status=status, page_number=page, page_size=page_size))
+            page_data = data.get("paginatedList") or {}
+            items = page_data.get("items") or []
+            for item in items:
+                if isinstance(item, dict) and item_matches_job_fee(item, job, start_time):
+                    for key in ("bookingFee", "amount", "totalAmount"):
+                        amount = as_decimal(item.get(key))
+                        if amount is not None:
+                            return amount
+            if not items:
+                break
+            total_pages = int(page_data.get("totalPages") or 0)
+            if total_pages and page >= total_pages:
+                break
+    return None
+
+
+def enrich_jobs_with_financials(session: requests.Session, jobs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Decimal | None]:
+    credit_balance = fetch_estate_credit_balance(session)
+    enriched = []
+    for job in jobs:
+        updated = dict(job)
+        updated["fee"] = fetch_booking_fee_from_history(session, updated)
+        enriched.append(updated)
+    return enriched, credit_balance
+
+
 def fetch_facilities(session: requests.Session) -> dict[str, Any]:
     return request_json(session, "GET", facility_list_url())
 
@@ -1425,24 +1528,36 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
     now = dt.datetime.now().astimezone()
     session, token, _ = load_session(args)
     jobs = select_jobs_due_today(select_jobs_for_earliest_not_yet_open_dates(session, expand_config_jobs(config), now, use_color), now)
+    if jobs:
+        jobs, credit_before = enrich_jobs_with_financials(session, jobs)
+    else:
+        credit_before = None
     auth_expires_at = token_expiry(token)
     auth_ok = auth_valid_for_jobs(token, jobs)
+    total_fee = sum((as_decimal(job.get("fee")) or Decimal("0") for job in jobs), Decimal("0"))
     print(
         colorize("Due tonight notification", Style.CYAN, use_color)
-        + f" now={now.isoformat(timespec='seconds')} count={len(jobs)} auth_ok={auth_ok}",
+        + f" now={now.isoformat(timespec='seconds')} count={len(jobs)} auth_ok={auth_ok} "
+        f"credit={format_money(credit_before)} total_fee={format_money(total_fee)}",
         flush=True,
     )
     for job in jobs:
         print(
             colorize("Due tonight job", Style.CYAN, use_color)
             + f" name={job['name']} date={job['date']} starts={list(job['preferred_starts'])} "
-            f"open_at={job['open_at'].isoformat(timespec='seconds')}",
+            f"open_at={job['open_at'].isoformat(timespec='seconds')} fee={format_money(job.get('fee'))}",
             flush=True,
         )
     if jobs:
         notify_telegram(
             "booking",
-            format_tonight_jobs_message(jobs, now, auth_ok=auth_ok, auth_expires_at=auth_expires_at),
+            format_tonight_jobs_message(
+                jobs,
+                now,
+                auth_ok=auth_ok,
+                auth_expires_at=auth_expires_at,
+                credit_before=credit_before,
+            ),
             args.no_color,
             parse_mode="HTML",
         )
@@ -2111,6 +2226,12 @@ def main() -> int:
     args = parser.parse_args()
     setup_output_logging(args.log_file, args.no_color)
     use_color = not args.no_color
+    if args.notify_due_tonight and not args.config:
+        args.config = DEFAULT_BASE_CONFIG_FILE
+        if not args.facilities_config and Path(DEFAULT_FACILITIES_CONFIG_FILE).exists():
+            args.facilities_config = DEFAULT_FACILITIES_CONFIG_FILE
+        if not args.bookings_config and Path(DEFAULT_BOOKINGS_CONFIG_FILE).exists():
+            args.bookings_config = DEFAULT_BOOKINGS_CONFIG_FILE
     print(
         colorize("Runtime context", Style.GRAY, use_color)
         + f" cwd={Path.cwd()} argv={sys.argv!r} now={dt.datetime.now().astimezone().isoformat(timespec='seconds')} "

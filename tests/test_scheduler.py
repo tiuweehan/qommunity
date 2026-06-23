@@ -2,9 +2,36 @@ import datetime as dt
 import json
 import unittest
 from collections import Counter, defaultdict
+from decimal import Decimal
 from pathlib import Path
 
 import tennis_booker as tb
+
+
+class FakeResponse:
+    def __init__(self, body: dict, status_code: int = 200) -> None:
+        self._body = body
+        self.status_code = status_code
+        self.headers = {}
+        self.content = json.dumps(body).encode()
+        self.text = json.dumps(body)
+
+    def json(self) -> dict:
+        return self._body
+
+
+class FakeSession:
+    no_color = True
+
+    def __init__(self, responses: list[dict]) -> None:
+        self.responses = list(responses)
+        self.requests: list[tuple[str, str]] = []
+
+    def request(self, method: str, url: str, **kwargs) -> FakeResponse:
+        self.requests.append((method, url))
+        if not self.responses:
+            raise AssertionError(f"Unexpected request {method} {url}")
+        return FakeResponse(self.responses.pop(0))
 
 
 def sample_config() -> dict:
@@ -209,18 +236,29 @@ class TelegramMessageTest(unittest.TestCase):
 
     def test_tonight_jobs_message_lists_due_bookings(self) -> None:
         jobs = tb.expand_config_jobs(sample_config())[:2]
+        jobs[0]["fee"] = Decimal("3.27")
+        jobs[1]["fee"] = Decimal("3.27")
         now = dt.datetime.fromisoformat("2026-06-22T08:00:00+08:00")
         auth_expires_at = dt.datetime.fromisoformat("2026-06-30T09:12:34+08:00")
 
-        message = tb.format_tonight_jobs_message(jobs, now, auth_ok=True, auth_expires_at=auth_expires_at)
+        message = tb.format_tonight_jobs_message(
+            jobs,
+            now,
+            auth_ok=True,
+            auth_expires_at=auth_expires_at,
+            credit_before=Decimal("37.78"),
+        )
 
         self.assertIn("<b>📅 Bookings Due Tonight</b>", message)
         self.assertIn("Run Date: 2026-06-22 (Mon)", message)
-        self.assertIn("Count: 2", message)
         self.assertIn("Auth: 2026-06-30 09:12:34 ✅", message)
+        self.assertIn("Credit: $37.78 -> $31.24 ✅", message)
         self.assertIn("Advance: 30 days", message)
+        self.assertIn("Count: 2", message)
+        self.assertLess(message.index("Advance: 30 days"), message.index("Count: 2"))
         self.assertIn("1. Tennis Court 3", message)
         self.assertIn("Slot: 07:00 AM to 08:00 AM", message)
+        self.assertIn("Fee: $3.27", message)
         self.assertIn("Job: 0", message)
         self.assertIn("2. Tennis Court 3", message)
         self.assertIn("Slot: 08:00 AM to 09:00 AM", message)
@@ -276,6 +314,44 @@ class TelegramMessageTest(unittest.TestCase):
         self.assertIn("<b>❌ Booking Failed</b>", message)
         self.assertIn("Job: 1", message)
         self.assertIn("Failed Reason: slot is already full", message)
+
+
+class FinancialsTest(unittest.TestCase):
+    def test_fetch_estate_credit_balance_reads_app_total_balance(self) -> None:
+        session = FakeSession(
+            [
+                {
+                    "estateCreditOutput": {
+                        "totalBalance": "37.7800",
+                        "estateCreditBalanceOutputs": [{"balance": "10.0000"}],
+                    }
+                }
+            ]
+        )
+
+        self.assertEqual(tb.fetch_estate_credit_balance(session), Decimal("37.7800"))
+
+    def test_fetch_booking_fee_from_history_matches_facility_and_slot(self) -> None:
+        job = tb.expand_config_jobs(sample_config())[0]
+        session = FakeSession(
+            [
+                {
+                    "paginatedList": {
+                        "items": [
+                            {
+                                "facilityId": "court-3",
+                                "facilityName": "Tennis Court 3",
+                                "bookingFee": "3.2700",
+                                "timeSlots": [{"startTime": "07:00:00", "endTime": "08:00:00"}],
+                            }
+                        ],
+                        "totalPages": 1,
+                    }
+                }
+            ]
+        )
+
+        self.assertEqual(tb.fetch_booking_fee_from_history(session, job), Decimal("3.2700"))
 
 
 if __name__ == "__main__":

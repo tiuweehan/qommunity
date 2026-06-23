@@ -218,7 +218,10 @@ The due-tonight summary includes:
 
 ```text
 Auth      Current token is valid until at least one hour after the midnight booking attempt.
+Credit    Current EstateCredit balance from the app, projected after all due jobs.
 Advance   Actual number of days between the API-backed opening date and the court booking date.
+Count     Number of due jobs in the summary.
+Fee       Booking fee for each job, read from Qommunity booking history for the same facility/time.
 Job       Cron shard index that will handle the booking, e.g. --job-index 0 or --job-index 1.
 ```
 
