@@ -1205,8 +1205,8 @@ def session_datetime(job: dict[str, Any]) -> dt.datetime:
 
 
 def select_next_booking_jobs(jobs: list[dict[str, Any]], now: dt.datetime, limit: int) -> list[dict[str, Any]]:
-    upcoming = [job for job in jobs if job["open_at"] > now.astimezone(job["open_at"].tzinfo)]
-    return sorted(upcoming, key=lambda job: (job["open_at"], session_datetime(job), job["name"], job["preferred_starts"]))[:limit]
+    selection = select_config_jobs(jobs, now=now, due_window_seconds=0)
+    return selection["pending"][:limit]
 
 
 def print_next_booking_jobs(jobs: list[dict[str, Any]], now: dt.datetime, limit: int) -> None:
