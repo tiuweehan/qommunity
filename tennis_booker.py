@@ -1136,6 +1136,20 @@ def item_matches_job_fee(item: dict[str, Any], job: dict[str, Any], start_time: 
     return any(isinstance(slot, dict) and slot.get("startTime") == start_time for slot in slots)
 
 
+def fee_for_matching_item(item: dict[str, Any]) -> Decimal | None:
+    amount = None
+    for key in ("bookingFee", "amount", "totalAmount"):
+        amount = as_decimal(item.get(key))
+        if amount is not None:
+            break
+    if amount is None:
+        return None
+    slots = [slot for slot in (item.get("timeSlots") or []) if isinstance(slot, dict)]
+    if len(slots) > 1:
+        return amount / Decimal(len(slots))
+    return amount
+
+
 def fetch_booking_fee_from_history(session: requests.Session, job: dict[str, Any]) -> Decimal | None:
     starts = list(job.get("preferred_starts") or [])
     if not starts:
@@ -1151,10 +1165,9 @@ def fetch_booking_fee_from_history(session: requests.Session, job: dict[str, Any
             items = page_data.get("items") or []
             for item in items:
                 if isinstance(item, dict) and item_matches_job_fee(item, job, start_time):
-                    for key in ("bookingFee", "amount", "totalAmount"):
-                        amount = as_decimal(item.get(key))
-                        if amount is not None:
-                            return amount
+                    amount = fee_for_matching_item(item)
+                    if amount is not None:
+                        return amount
             if not items:
                 break
             total_pages = int(page_data.get("totalPages") or 0)

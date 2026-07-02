@@ -376,6 +376,25 @@ class FinancialsTest(unittest.TestCase):
 
         self.assertEqual(tb.fetch_booking_fee_from_history(session, job), Decimal("3.2700"))
 
+    def test_fee_for_matching_item_prorates_multi_slot_booking_fee(self) -> None:
+        item = {
+            "bookingFee": "6.5400",
+            "timeSlots": [
+                {"startTime": "07:00:00", "endTime": "08:00:00"},
+                {"startTime": "08:00:00", "endTime": "09:00:00"},
+            ],
+        }
+
+        self.assertEqual(tb.fee_for_matching_item(item), Decimal("3.2700"))
+
+    def test_fee_for_matching_item_keeps_single_slot_booking_fee(self) -> None:
+        item = {
+            "bookingFee": "3.2700",
+            "timeSlots": [{"startTime": "08:00:00", "endTime": "09:00:00"}],
+        }
+
+        self.assertEqual(tb.fee_for_matching_item(item), Decimal("3.2700"))
+
 
 class AuthRetryTest(unittest.TestCase):
     def test_auth_request_retries_timeouts(self) -> None:
