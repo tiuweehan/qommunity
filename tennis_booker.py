@@ -1198,6 +1198,35 @@ def print_booking_summary(label: str, data: dict[str, Any]) -> None:
     )
 
 
+def session_datetime(job: dict[str, Any]) -> dt.datetime:
+    starts = list(job.get("preferred_starts") or [])
+    start_time = str(starts[0] if starts else "00:00:00")
+    return parse_local_datetime(str(job["date"]), start_time)
+
+
+def select_next_booking_jobs(jobs: list[dict[str, Any]], now: dt.datetime, limit: int) -> list[dict[str, Any]]:
+    upcoming = [job for job in jobs if job["open_at"] > now.astimezone(job["open_at"].tzinfo)]
+    return sorted(upcoming, key=lambda job: (job["open_at"], session_datetime(job), job["name"], job["preferred_starts"]))[:limit]
+
+
+def print_next_booking_jobs(jobs: list[dict[str, Any]], now: dt.datetime, limit: int) -> None:
+    selected = select_next_booking_jobs(jobs, now, limit)
+    print(f"Next bookings count={len(selected)} now={now.isoformat(timespec='seconds')}", flush=True)
+    print("open_datetime              session_datetime           facility         slot", flush=True)
+    for job in selected:
+        starts = list(job["preferred_starts"])
+        start_time = str(starts[0] if starts else "")
+        parsed_start = dt.datetime.combine(dt.date.today(), dt.time.fromisoformat(start_time))
+        end_time = (parsed_start + dt.timedelta(hours=1)).time().isoformat()
+        print(
+            f"{job['open_at'].isoformat(timespec='seconds'):<26} "
+            f"{session_datetime(job).isoformat(timespec='seconds'):<26} "
+            f"{str(job['name']):<16} "
+            f"{display_time(start_time)}-{display_time(end_time)}",
+            flush=True,
+        )
+
+
 def parse_wait_until(value: str | None) -> dt.datetime | None:
     if not value:
         return None
@@ -2184,6 +2213,14 @@ def main() -> int:
     parser.add_argument("--book", action="store_true", help="Actually confirm the booking.")
     parser.add_argument("--notify-due-tonight", action="store_true", help="In config mode, send a Telegram summary of jobs whose booking opens later today, then exit.")
     parser.add_argument(
+        "--next-bookings",
+        nargs="?",
+        const=10,
+        type=int,
+        default=0,
+        help="Print the next N configured booking openings, default 10, then exit.",
+    )
+    parser.add_argument(
         "--job-index",
         type=int,
         default=int(os.environ["QOMMUNITY_JOB_INDEX"]) if os.environ.get("QOMMUNITY_JOB_INDEX") else None,
@@ -2209,7 +2246,7 @@ def main() -> int:
     args = parser.parse_args()
     setup_output_logging(args.log_file, args.no_color)
     use_color = not args.no_color
-    if args.notify_due_tonight and not args.config:
+    if (args.notify_due_tonight or args.next_bookings) and not args.config:
         args.config = DEFAULT_BASE_CONFIG_FILE
         if not args.facilities_config and Path(DEFAULT_FACILITIES_CONFIG_FILE).exists():
             args.facilities_config = DEFAULT_FACILITIES_CONFIG_FILE
@@ -2251,6 +2288,11 @@ def main() -> int:
         facilities_config = load_config(args.facilities_config) if args.facilities_config else None
         bookings_config = load_config(args.bookings_config) if args.bookings_config else None
         merged_config = merge_config(base_config, facilities_config, bookings_config)
+        if args.next_bookings:
+            if args.next_bookings < 1:
+                parser.error("--next-bookings must be 1 or greater")
+            print_next_booking_jobs(expand_config_jobs(merged_config), dt.datetime.now().astimezone(), args.next_bookings)
+            return 0
         if args.notify_due_tonight:
             return run_due_tonight_notification(args, merged_config)
         return run_config(args, merged_config)

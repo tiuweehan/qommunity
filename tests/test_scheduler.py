@@ -151,6 +151,22 @@ class SchedulerSelectionTest(unittest.TestCase):
         selected = tb.select_jobs_due_today(self.jobs, now=self.at("2026-06-23T00:00:01"))
         self.assertEqual(selected, [])
 
+    def test_next_booking_jobs_selects_future_openings_in_order(self) -> None:
+        config = sample_config()
+        config["bookings"][0]["open_date"] = "2026-07-02"
+        config["bookings"][1]["open_date"] = "2026-07-02"
+        jobs = tb.expand_config_jobs(config)
+
+        selected = tb.select_next_booking_jobs(jobs, now=self.at("2026-06-23T00:00:01"), limit=2)
+
+        self.assertEqual(
+            [(job["open_at"].date().isoformat(), job["date"], job["preferred_starts"]) for job in selected],
+            [
+                ("2026-06-26", "2026-07-26", ("07:00:00",)),
+                ("2026-07-02", "2026-07-23", ("07:00:00",)),
+            ],
+        )
+
     def test_calculated_open_date_uses_days_in_previous_month(self) -> None:
         self.assertEqual(tb.calculated_open_date(dt.date(2026, 8, 2)), dt.date(2026, 7, 2))
         self.assertEqual(tb.calculated_open_date(dt.date(2026, 3, 29)), dt.date(2026, 3, 1))

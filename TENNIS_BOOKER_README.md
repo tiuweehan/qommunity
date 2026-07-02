@@ -167,6 +167,9 @@ QOMMUNITY_AUTH_HTTP_TIMEOUT_SECONDS
   This is used by the 08:00 daily reminder cron. It uses each booking entry's configured
   open_date/open_time; it does not query Qommunity's Not Yet Open calendar to decide what is due.
 
+--next-bookings [N]
+  Print the next N configured booking openings and sessions, then exit. Default: 10.
+
 --job-index N
   In config mode, run only the Nth pending job after sorting. 0-based. Use this for cron sharding.
   For example, two cron invocations with --job-index 0 and --job-index 1 can book two independent
