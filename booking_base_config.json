@@ -1,6 +1,5 @@
 {
   "defaults": {
-    "advance_days": 30,
     "open_time": "00:00:00",
     "lead_seconds": 1,
     "interval": 0.2,

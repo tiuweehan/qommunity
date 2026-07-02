@@ -1,6 +1,5 @@
 {
   "defaults": {
-    "advance_days": 30,
     "open_time": "00:00:00",
     "lead_seconds": 1,
     "interval": 0.2,
@@ -16,6 +15,7 @@
       "dates": [
         "2026-07-26"
       ],
+      "open_date": "2026-06-26",
       "preferred_starts": [
         "08:00:00",
         "07:00:00"

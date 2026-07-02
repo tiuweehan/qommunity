@@ -42,7 +42,6 @@ class FakeSession:
 def sample_config() -> dict:
     return {
         "defaults": {
-            "advance_days": 30,
             "open_time": "00:00:00",
             "lead_seconds": 1,
             "interval": 0.2,
@@ -152,55 +151,21 @@ class SchedulerSelectionTest(unittest.TestCase):
         selected = tb.select_jobs_due_today(self.jobs, now=self.at("2026-06-23T00:00:01"))
         self.assertEqual(selected, [])
 
-    def test_earliest_not_yet_open_date_uses_day_or_slot_status(self) -> None:
-        data = {
-            "availability": {
-                "availableDates": [
-                    {"date": "2026-07-23", "status": "Available", "timeSlots": []},
-                    {"date": "2026-07-24", "status": "Available", "timeSlots": [{"status": "Not Yet Open"}]},
-                    {"date": "2026-07-25", "status": "Not Yet Open", "timeSlots": []},
-                ]
-            }
-        }
-        self.assertEqual(tb.earliest_not_yet_open_date(data), "2026-07-24")
+    def test_calculated_open_date_uses_days_in_previous_month(self) -> None:
+        self.assertEqual(tb.calculated_open_date(dt.date(2026, 8, 2)), dt.date(2026, 7, 2))
+        self.assertEqual(tb.calculated_open_date(dt.date(2026, 3, 29)), dt.date(2026, 3, 1))
 
-    def test_dynamic_open_time_is_next_configured_open_time(self) -> None:
-        job = self.jobs[0]
-        updated = tb.with_dynamic_open_times(job, now=self.at("2026-06-22T08:00:00"))
-
-        self.assertEqual(updated["open_at"].isoformat(timespec="seconds"), "2026-06-23T00:00:00+08:00")
-        self.assertEqual(updated["start_at"].isoformat(timespec="seconds"), "2026-06-22T23:59:59+08:00")
-        self.assertEqual(updated["due_source"], "earliest_not_yet_open")
-        self.assertEqual(tb.actual_advance_days(updated), 30)
-
-    def test_earliest_not_yet_open_probe_skips_stale_open_windows(self) -> None:
+    def test_open_date_override_drives_job_start_time(self) -> None:
         config = sample_config()
-        config["bookings"].append(
-            {"facility": "tennis_court_3", "date": "2026-08-02", "preferred_starts": ["07:00:00"]}
-        )
-        jobs = tb.expand_config_jobs(config)
-        session = FakeSession(
-            [
-                {
-                    "availability": {
-                        "availableDates": [
-                            {"date": "2026-08-02", "status": "Not Yet Open", "timeSlots": []},
-                        ]
-                    }
-                }
-            ]
-        )
+        config["bookings"][0]["open_date"] = "2026-07-02"
 
-        selected = tb.select_jobs_for_earliest_not_yet_open_dates(
-            session,
-            jobs,
-            now=self.at("2026-07-01T23:59:00"),
-            use_color=False,
-        )
+        job = tb.expand_config_jobs(config)[2]
 
-        self.assertIn("bookingdate=2026-08-02", session.requests[0][1])
-        self.assertEqual([(job["date"], job["preferred_starts"]) for job in selected], [("2026-08-02", ("07:00:00",))])
-        self.assertEqual(selected[0]["open_at"].isoformat(timespec="seconds"), "2026-07-02T00:00:00+08:00")
+        self.assertEqual(job["date"], "2026-07-23")
+        self.assertEqual(job["open_date"], "2026-07-02")
+        self.assertEqual(job["open_at"].isoformat(timespec="seconds"), "2026-07-02T00:00:00+08:00")
+        self.assertEqual(job["start_at"].isoformat(timespec="seconds"), "2026-07-01T23:59:59+08:00")
+        self.assertEqual(job["advance_days"], 21)
 
 
 class TenYearConfigTest(unittest.TestCase):
@@ -217,6 +182,10 @@ class TenYearConfigTest(unittest.TestCase):
         by_date = defaultdict(set)
         for entry in bookings:
             self.assertEqual(entry["facility"], "tennis_court_3")
+            booking_date = dt.date.fromisoformat(entry["date"])
+            open_date = dt.date.fromisoformat(entry["open_date"])
+            self.assertEqual(booking_date.weekday(), 6)
+            self.assertEqual(open_date, tb.calculated_open_date(booking_date))
             by_date[entry["date"]].add(entry["preferred_starts"][0])
         self.assertTrue(all(starts_for_date == {"07:00:00", "08:00:00"} for starts_for_date in by_date.values()))
 
@@ -298,29 +267,6 @@ class TelegramMessageTest(unittest.TestCase):
         self.assertIn("Slot: 08:00 AM to 09:00 AM", message)
         self.assertIn("Job: 1", message)
         self.assertIn("Date: 2026-07-23 (Thu)", message)
-
-    def test_opening_diagnostics_message_includes_api_and_config_dates(self) -> None:
-        now = dt.datetime.fromisoformat("2026-07-02T09:00:00+08:00")
-
-        message = tb.format_opening_diagnostics_message(
-            "Booking cron found API/config mismatch",
-            [
-                {
-                    "facility_id": "court-3",
-                    "probe_date": "2026-08-02",
-                    "due_date": "2026-08-03",
-                    "matching_job_count": 0,
-                    "active_config_count": 1042,
-                    "configured_dates": ["2026-08-02", "2026-08-09"],
-                }
-            ],
-            now,
-        )
-
-        self.assertIn("Booking cron found API/config mismatch", message)
-        self.assertIn("api_due_date: 2026-08-03", message)
-        self.assertIn("matching_jobs: 0", message)
-        self.assertIn("next_configured_dates: 2026-08-02, 2026-08-09", message)
 
     def test_success_message_includes_timeline_and_booking_id(self) -> None:
         job = tb.expand_config_jobs(sample_config())[0]

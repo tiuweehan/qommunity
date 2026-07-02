@@ -164,8 +164,8 @@ QOMMUNITY_AUTH_HTTP_TIMEOUT_SECONDS
 
 --notify-due-tonight
   In config mode, send a Telegram summary of jobs whose probe start is later today, then exit.
-  This is used by the 08:00 daily reminder cron. It checks Qommunity availability and only
-  reports jobs whose booking date is the earliest date currently marked Not Yet Open.
+  This is used by the 08:00 daily reminder cron. It uses each booking entry's configured
+  open_date/open_time; it does not query Qommunity's Not Yet Open calendar to decide what is due.
 
 --job-index N
   In config mode, run only the Nth pending job after sorting. 0-based. Use this for cron sharding.
@@ -223,7 +223,7 @@ The due-tonight summary includes:
 ```text
 Auth      Current token is valid until at least one hour after the midnight booking attempt.
 Credit    Current EstateCredit balance from the app, projected after all due jobs.
-Advance   Actual number of days between the API-backed opening date and the court booking date.
+Advance   Actual number of days between configured open_date and the court booking date.
 Count     Number of due jobs in the summary.
 Fee       Booking fee for each job, read from Qommunity booking history for the same facility/time.
 Job       Cron shard index that will handle the booking, e.g. --job-index 0 or --job-index 1.
@@ -234,7 +234,6 @@ Job       Cron shard index that will handle the booking, e.g. --job-index 0 or -
 ```json
 {
   "defaults": {
-    "advance_days": 30,
     "open_time": "00:00:00",
     "lead_seconds": 1,
     "interval": 0.2,
@@ -269,6 +268,7 @@ Job       Cron shard index that will handle the booking, e.g. --job-index 0 or -
     {
       "facility": "tennis_court_3",
       "date": "2026-07-26",
+      "open_date": "2026-06-26",
       "preferred_starts": ["08:00:00"]
     }
   ]
@@ -276,6 +276,9 @@ Job       Cron shard index that will handle the booking, e.g. --job-index 0 or -
 ```
 
 `preferred_starts` is ordered. The script chooses the first available timing in the list.
+`open_date` is the date when the booking opens at `open_time`. The 10-year Sunday config is
+generated with `open_date = booking_date - days_in_previous_month`; for example,
+`2026-08-02` opens on `2026-07-02`, and `2026-03-29` opens on `2026-03-01`.
 
 ## Cron One-Shot Scheduler
 
@@ -303,16 +306,15 @@ Live booking:
 Scheduling behavior:
 
 ```text
-The scheduler first checks Qommunity availability for each facility.
-A config job is due only if its booking date is the earliest date currently marked Not Yet Open.
-For a due job, open_at is treated as the next configured open_time, and start_at is open_at minus lead_seconds.
+The scheduler expands each config entry into a job using its open_date and open_time.
+For a due job, open_at is open_date + open_time, and start_at is open_at minus lead_seconds.
 ```
 
-With current defaults, if Qommunity says `2026-07-26` is the earliest Not Yet Open date,
-the script treats it as opening at:
+With current defaults, if a config entry has `open_date: 2026-07-02`, the script treats it
+as opening at:
 
 ```text
-the next 00:00:00 +08:00
+2026-07-02 00:00:00 +08:00
 ```
 
 The script starts probing at:
@@ -325,12 +327,13 @@ Cron behavior:
 
 ```text
 Run once per day at 23:59 SGT.
-Only jobs matching the earliest Not Yet Open date and whose start_at is within --due-window-seconds are considered.
+Only jobs whose configured start_at is within --due-window-seconds are considered.
 The script may sleep briefly until start_at, then polls until booked or max_attempts is reached.
 It exits after the due jobs are handled.
 ```
 
-`advance_days` remains in the config as a fallback/sort hint for pure local scheduling helpers, but live cron uses the API's earliest `Not Yet Open` date instead of trusting a hard-coded release window.
+`Advance` in Telegram is computed from `date - open_date`; it is no longer an input default.
+Production booking entries should use explicit `open_date` values in `sunday_8am_bookings_10y.json`.
 
 ## Facility Listing
 

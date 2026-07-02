@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 import datetime as dt
 import html
 import json
@@ -41,7 +42,6 @@ DEFAULT_MITMPROXY_CA = str(Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem")
 DEFAULT_COMBINED_CA_BUNDLE = str(Path.home() / ".qommunity-ca-bundle.pem")
 DEFAULT_PREFERRED_STARTS = ("08:00:00", "07:00:00")
 TOKEN_REFRESH_SKEW_SECONDS = 300
-DEFAULT_ADVANCE_DAYS = 30
 DEFAULT_OPEN_TIME = "00:00:00"
 DEFAULT_LEAD_SECONDS = 1.0
 DEFAULT_LOG_FILE = "tennis_booker.log"
@@ -331,28 +331,6 @@ def format_tonight_jobs_message(
                 f"Date: {html.escape(display_booking_date(str(job['date'])))}",
                 f"Fee: {html.escape(format_money(job.get('fee')))}",
                 f"Job: {index - 1}",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def format_opening_diagnostics_message(title: str, diagnostics: list[dict[str, Any]], now: dt.datetime) -> str:
-    lines = [
-        title,
-        f"at: {now.isoformat(timespec='seconds')}",
-        f"facilities_checked: {len(diagnostics)}",
-    ]
-    for index, diag in enumerate(diagnostics, 1):
-        configured = ", ".join(str(value) for value in diag.get("configured_dates") or []) or "-"
-        lines.extend(
-            [
-                "",
-                f"{index}. facility_id: {diag.get('facility_id')}",
-                f"probe_date: {diag.get('probe_date')}",
-                f"api_due_date: {diag.get('due_date') or 'none'}",
-                f"matching_jobs: {diag.get('matching_job_count')}",
-                f"active_config_dates: {diag.get('active_config_count')}",
-                f"next_configured_dates: {configured}",
             ]
         )
     return "\n".join(lines)
@@ -1031,19 +1009,6 @@ def status_for_report(day: dict[str, Any] | None, preferred_starts: tuple[str, .
     return str(day.get("status") or "Unavailable")
 
 
-def earliest_not_yet_open_date(data: dict[str, Any]) -> str | None:
-    availability = data.get("availability") or {}
-    candidates = []
-    for day in availability.get("availableDates") or []:
-        slots = day.get("timeSlots") or []
-        slot_statuses = [str(slot.get("status") or "") for slot in slots if isinstance(slot, dict)]
-        if day.get("status") == "Not Yet Open" or "Not Yet Open" in slot_statuses:
-            date_value = str(day.get("date") or "")
-            if date_value:
-                candidates.append(date_value)
-    return min(candidates) if candidates else None
-
-
 def classify_unavailable(day: dict[str, Any] | None, preferred_starts: tuple[str, ...]) -> tuple[str, str]:
     if not day:
         return OUTCOME_RETRY, "target date not returned"
@@ -1312,6 +1277,16 @@ def parse_local_datetime(date_value: str, time_value: str) -> dt.datetime:
     return dt.datetime.combine(date_part, time_part, tzinfo=local_tz)
 
 
+def calculated_open_date(booking_date: dt.date) -> dt.date:
+    previous_month = booking_date.month - 1
+    previous_year = booking_date.year
+    if previous_month == 0:
+        previous_month = 12
+        previous_year -= 1
+    days_in_previous_month = calendar.monthrange(previous_year, previous_month)[1]
+    return booking_date - dt.timedelta(days=days_in_previous_month)
+
+
 def load_config(path: str) -> dict[str, Any]:
     with Path(path).open() as f:
         config = json.load(f)
@@ -1407,7 +1382,6 @@ def make_job(
         raise SystemExit(f"Facility {facility_lookup_key(facility)!r} requires facility_id")
 
     target_date = dt.date.fromisoformat(str(booking_date))
-    advance_days = int(overrides.get("advance_days", facility.get("advance_days", defaults.get("advance_days", DEFAULT_ADVANCE_DAYS))))
     open_time = overrides.get("open_time", facility.get("open_time", defaults.get("open_time", DEFAULT_OPEN_TIME)))
     lead_seconds = float(overrides.get("lead_seconds", facility.get("lead_seconds", defaults.get("lead_seconds", DEFAULT_LEAD_SECONDS))))
     interval = float(overrides.get("interval", facility.get("interval", defaults.get("interval", 0.2))))
@@ -1416,7 +1390,9 @@ def make_job(
     validate = bool(overrides.get("validate", facility.get("validate", defaults.get("validate", False))))
     book = bool(overrides.get("book", facility.get("book", defaults.get("book", False))))
 
-    open_date = target_date - dt.timedelta(days=advance_days)
+    configured_open_date = overrides.get("open_date", facility.get("open_date", defaults.get("open_date")))
+    open_date = dt.date.fromisoformat(str(configured_open_date)) if configured_open_date else calculated_open_date(target_date)
+    advance_days = (target_date - open_date).days
     open_at = parse_local_datetime(open_date.isoformat(), open_time)
     start_at = open_at - dt.timedelta(seconds=lead_seconds)
     return {
@@ -1431,6 +1407,7 @@ def make_job(
         "max_attempts": max_attempts,
         "open_at": open_at,
         "start_at": start_at,
+        "open_date": open_date.isoformat(),
         "open_time": normalize_time(str(open_time)),
         "advance_days": advance_days,
         "lead_seconds": lead_seconds,
@@ -1530,88 +1507,11 @@ def select_jobs_due_today(jobs: list[dict[str, Any]], now: dt.datetime) -> list[
     return selected
 
 
-def next_open_at_for_job(job: dict[str, Any], now: dt.datetime) -> dt.datetime:
-    local_now = now.astimezone(job["open_at"].tzinfo)
-    open_time = str(job.get("open_time") or DEFAULT_OPEN_TIME)
-    open_at = parse_local_datetime(local_now.date().isoformat(), open_time)
-    if open_at <= local_now:
-        open_at += dt.timedelta(days=1)
-    return open_at
-
-
-def with_dynamic_open_times(job: dict[str, Any], now: dt.datetime) -> dict[str, Any]:
-    updated = dict(job)
-    open_at = next_open_at_for_job(job, now)
-    updated["open_at"] = open_at
-    updated["start_at"] = open_at - dt.timedelta(seconds=float(job.get("lead_seconds", DEFAULT_LEAD_SECONDS)))
-    updated["due_source"] = "earliest_not_yet_open"
-    return updated
-
-
-def select_jobs_for_earliest_not_yet_open_dates(
-    session: requests.Session,
-    jobs: list[dict[str, Any]],
-    now: dt.datetime,
-    use_color: bool,
-    diagnostics: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    by_facility: dict[str, list[dict[str, Any]]] = {}
-    for job in jobs:
-        if job["open_at"] > now.astimezone(job["open_at"].tzinfo):
-            by_facility.setdefault(str(job["facility_id"]), []).append(job)
-
-    selected = []
-    for facility_id, facility_jobs in by_facility.items():
-        probe_date = min(str(job["date"]) for job in facility_jobs)
-        data = request_json(session, "GET", facility_url(facility_id, probe_date))
-        due_date = earliest_not_yet_open_date(data)
-        configured_dates = sorted({str(job["date"]) for job in facility_jobs})
-        matching_jobs = [job for job in facility_jobs if str(job["date"]) == due_date]
-        if diagnostics is not None:
-            diagnostics.append(
-                {
-                    "facility_id": facility_id,
-                    "probe_date": probe_date,
-                    "due_date": due_date,
-                    "configured_dates": configured_dates[:5],
-                    "active_config_count": len(configured_dates),
-                    "matching_job_count": len(matching_jobs),
-                }
-            )
-        print(
-            colorize("Earliest Not Yet Open check", Style.CYAN, use_color)
-            + f" facility_id={facility_id} probe_date={probe_date} due_date={due_date or 'none'} "
-            f"matching_jobs={len(matching_jobs)} active_config_dates={len(configured_dates)}",
-            flush=True,
-        )
-        if due_date and not matching_jobs:
-            print(
-                colorize("Earliest Not Yet Open has no configured job", Style.RED, use_color)
-                + f" facility_id={facility_id} due_date={due_date} next_configured_dates={configured_dates[:5]}",
-                flush=True,
-            )
-        if not due_date:
-            continue
-        for job in matching_jobs:
-            selected.append(with_dynamic_open_times(job, now))
-    return sorted(selected, key=lambda job: (job["start_at"], job["date"], job["name"], job["preferred_starts"]))
-
-
 def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any]) -> int:
     use_color = not args.no_color
     now = dt.datetime.now().astimezone()
     session, token, _ = load_session(args)
-    opening_diagnostics: list[dict[str, Any]] = []
-    jobs = select_jobs_due_today(
-        select_jobs_for_earliest_not_yet_open_dates(
-            session,
-            expand_config_jobs(config),
-            now,
-            use_color,
-            diagnostics=opening_diagnostics,
-        ),
-        now,
-    )
+    jobs = select_jobs_due_today(expand_config_jobs(config), now)
     if jobs:
         jobs, credit_before = enrich_jobs_with_financials(session, jobs)
     else:
@@ -1644,12 +1544,6 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
             ),
             args.no_color,
             parse_mode="HTML",
-        )
-    elif any(diag.get("due_date") and not diag.get("matching_job_count") for diag in opening_diagnostics):
-        notify_telegram(
-            "debug",
-            format_opening_diagnostics_message("Due tonight found no configured job", opening_diagnostics, now),
-            args.no_color,
         )
     return 0
 
@@ -2007,8 +1901,6 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     now = dt.datetime.now().astimezone()
     due_by = now + dt.timedelta(seconds=args.due_window_seconds) if args.due_window_seconds else None
     session, token, fixed_token = load_session(args)
-    opening_diagnostics: list[dict[str, Any]] = []
-    jobs = select_jobs_for_earliest_not_yet_open_dates(session, jobs, now, use_color, diagnostics=opening_diagnostics)
     selection = select_config_jobs(jobs, now, args.due_window_seconds, args.job_index)
     pending_jobs = selection["pending"]
     skipped_jobs = selection["skipped"]
@@ -2077,27 +1969,11 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                 f"future: {len(future_jobs)}",
                 f"due_window_seconds: {args.due_window_seconds}",
                 f"book: {args.book}",
-                f"opening_checks: {len(opening_diagnostics)}",
-                *[
-                    (
-                        f"opening_check_{index}: probe={diag.get('probe_date')} "
-                        f"api_due={diag.get('due_date') or 'none'} "
-                        f"matching={diag.get('matching_job_count')} "
-                        f"next_configured={','.join(str(value) for value in diag.get('configured_dates') or []) or '-'}"
-                    )
-                    for index, diag in enumerate(opening_diagnostics, 1)
-                ],
                 f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
             ]
         ),
         args.no_color,
     )
-    if not jobs and any(diag.get("due_date") and not diag.get("matching_job_count") for diag in opening_diagnostics):
-        notify_telegram(
-            "debug",
-            format_opening_diagnostics_message("Booking cron found API/config mismatch", opening_diagnostics, now),
-            args.no_color,
-        )
     if not jobs:
         return 0
 
