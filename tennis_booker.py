@@ -2288,7 +2288,7 @@ def main() -> int:
             )
         return 0
 
-    if args.config:
+    if args.config and not (args.date or args.show_booking_id or args.cancel_booking_id):
         print(
             colorize("Config mode", Style.CYAN, use_color)
             + f" config={args.config} facilities_config={args.facilities_config or 'none'} "
