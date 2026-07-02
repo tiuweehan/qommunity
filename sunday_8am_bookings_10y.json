@@ -34,6 +34,24 @@
     },
     {
       "facility": "tennis_court_3",
+      "date": "2026-08-03",
+      "open_date": "2026-07-03",
+      "preferred_starts": [
+        "07:00:00"
+      ],
+      "test": true
+    },
+    {
+      "facility": "tennis_court_3",
+      "date": "2026-08-03",
+      "open_date": "2026-07-03",
+      "preferred_starts": [
+        "08:00:00"
+      ],
+      "test": true
+    },
+    {
+      "facility": "tennis_court_3",
       "date": "2026-08-09",
       "open_date": "2026-07-09",
       "preferred_starts": [

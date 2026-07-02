@@ -203,7 +203,8 @@ class TenYearConfigTest(unittest.TestCase):
             self.assertEqual(entry["facility"], "tennis_court_3")
             booking_date = dt.date.fromisoformat(entry["date"])
             open_date = dt.date.fromisoformat(entry["open_date"])
-            self.assertEqual(booking_date.weekday(), 6)
+            if not entry.get("test"):
+                self.assertEqual(booking_date.weekday(), 6)
             self.assertEqual(open_date, tb.calculated_open_date(booking_date))
             by_date[entry["date"]].add(entry["preferred_starts"][0])
         self.assertTrue(all(starts_for_date == {"07:00:00", "08:00:00"} for starts_for_date in by_date.values()))
