@@ -173,6 +173,35 @@ class SchedulerSelectionTest(unittest.TestCase):
         self.assertEqual(updated["due_source"], "earliest_not_yet_open")
         self.assertEqual(tb.actual_advance_days(updated), 30)
 
+    def test_earliest_not_yet_open_probe_skips_stale_open_windows(self) -> None:
+        config = sample_config()
+        config["bookings"].append(
+            {"facility": "tennis_court_3", "date": "2026-08-02", "preferred_starts": ["07:00:00"]}
+        )
+        jobs = tb.expand_config_jobs(config)
+        session = FakeSession(
+            [
+                {
+                    "availability": {
+                        "availableDates": [
+                            {"date": "2026-08-02", "status": "Not Yet Open", "timeSlots": []},
+                        ]
+                    }
+                }
+            ]
+        )
+
+        selected = tb.select_jobs_for_earliest_not_yet_open_dates(
+            session,
+            jobs,
+            now=self.at("2026-07-01T23:59:00"),
+            use_color=False,
+        )
+
+        self.assertIn("bookingdate=2026-08-02", session.requests[0][1])
+        self.assertEqual([(job["date"], job["preferred_starts"]) for job in selected], [("2026-08-02", ("07:00:00",))])
+        self.assertEqual(selected[0]["open_at"].isoformat(timespec="seconds"), "2026-07-02T00:00:00+08:00")
+
 
 class TenYearConfigTest(unittest.TestCase):
     def test_sunday_config_has_independent_7am_and_8am_entries(self) -> None:

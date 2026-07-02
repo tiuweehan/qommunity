@@ -1533,9 +1533,8 @@ def select_jobs_for_earliest_not_yet_open_dates(
     use_color: bool,
 ) -> list[dict[str, Any]]:
     by_facility: dict[str, list[dict[str, Any]]] = {}
-    today = now.date()
     for job in jobs:
-        if dt.date.fromisoformat(str(job["date"])) >= today:
+        if job["open_at"] > now.astimezone(job["open_at"].tzinfo):
             by_facility.setdefault(str(job["facility_id"]), []).append(job)
 
     selected = []
