@@ -336,6 +336,28 @@ def format_tonight_jobs_message(
     return "\n".join(lines)
 
 
+def format_opening_diagnostics_message(title: str, diagnostics: list[dict[str, Any]], now: dt.datetime) -> str:
+    lines = [
+        title,
+        f"at: {now.isoformat(timespec='seconds')}",
+        f"facilities_checked: {len(diagnostics)}",
+    ]
+    for index, diag in enumerate(diagnostics, 1):
+        configured = ", ".join(str(value) for value in diag.get("configured_dates") or []) or "-"
+        lines.extend(
+            [
+                "",
+                f"{index}. facility_id: {diag.get('facility_id')}",
+                f"probe_date: {diag.get('probe_date')}",
+                f"api_due_date: {diag.get('due_date') or 'none'}",
+                f"matching_jobs: {diag.get('matching_job_count')}",
+                f"active_config_dates: {diag.get('active_config_count')}",
+                f"next_configured_dates: {configured}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def format_booking_result_message(
     succeeded: bool,
     job: dict[str, Any],
@@ -1531,6 +1553,7 @@ def select_jobs_for_earliest_not_yet_open_dates(
     jobs: list[dict[str, Any]],
     now: dt.datetime,
     use_color: bool,
+    diagnostics: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     by_facility: dict[str, list[dict[str, Any]]] = {}
     for job in jobs:
@@ -1542,16 +1565,35 @@ def select_jobs_for_earliest_not_yet_open_dates(
         probe_date = min(str(job["date"]) for job in facility_jobs)
         data = request_json(session, "GET", facility_url(facility_id, probe_date))
         due_date = earliest_not_yet_open_date(data)
+        configured_dates = sorted({str(job["date"]) for job in facility_jobs})
+        matching_jobs = [job for job in facility_jobs if str(job["date"]) == due_date]
+        if diagnostics is not None:
+            diagnostics.append(
+                {
+                    "facility_id": facility_id,
+                    "probe_date": probe_date,
+                    "due_date": due_date,
+                    "configured_dates": configured_dates[:5],
+                    "active_config_count": len(configured_dates),
+                    "matching_job_count": len(matching_jobs),
+                }
+            )
         print(
             colorize("Earliest Not Yet Open check", Style.CYAN, use_color)
-            + f" facility_id={facility_id} probe_date={probe_date} due_date={due_date or 'none'}",
+            + f" facility_id={facility_id} probe_date={probe_date} due_date={due_date or 'none'} "
+            f"matching_jobs={len(matching_jobs)} active_config_dates={len(configured_dates)}",
             flush=True,
         )
+        if due_date and not matching_jobs:
+            print(
+                colorize("Earliest Not Yet Open has no configured job", Style.RED, use_color)
+                + f" facility_id={facility_id} due_date={due_date} next_configured_dates={configured_dates[:5]}",
+                flush=True,
+            )
         if not due_date:
             continue
-        for job in facility_jobs:
-            if str(job["date"]) == due_date:
-                selected.append(with_dynamic_open_times(job, now))
+        for job in matching_jobs:
+            selected.append(with_dynamic_open_times(job, now))
     return sorted(selected, key=lambda job: (job["start_at"], job["date"], job["name"], job["preferred_starts"]))
 
 
@@ -1559,7 +1601,17 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
     use_color = not args.no_color
     now = dt.datetime.now().astimezone()
     session, token, _ = load_session(args)
-    jobs = select_jobs_due_today(select_jobs_for_earliest_not_yet_open_dates(session, expand_config_jobs(config), now, use_color), now)
+    opening_diagnostics: list[dict[str, Any]] = []
+    jobs = select_jobs_due_today(
+        select_jobs_for_earliest_not_yet_open_dates(
+            session,
+            expand_config_jobs(config),
+            now,
+            use_color,
+            diagnostics=opening_diagnostics,
+        ),
+        now,
+    )
     if jobs:
         jobs, credit_before = enrich_jobs_with_financials(session, jobs)
     else:
@@ -1592,6 +1644,12 @@ def run_due_tonight_notification(args: argparse.Namespace, config: dict[str, Any
             ),
             args.no_color,
             parse_mode="HTML",
+        )
+    elif any(diag.get("due_date") and not diag.get("matching_job_count") for diag in opening_diagnostics):
+        notify_telegram(
+            "debug",
+            format_opening_diagnostics_message("Due tonight found no configured job", opening_diagnostics, now),
+            args.no_color,
         )
     return 0
 
@@ -1949,7 +2007,8 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
     now = dt.datetime.now().astimezone()
     due_by = now + dt.timedelta(seconds=args.due_window_seconds) if args.due_window_seconds else None
     session, token, fixed_token = load_session(args)
-    jobs = select_jobs_for_earliest_not_yet_open_dates(session, jobs, now, use_color)
+    opening_diagnostics: list[dict[str, Any]] = []
+    jobs = select_jobs_for_earliest_not_yet_open_dates(session, jobs, now, use_color, diagnostics=opening_diagnostics)
     selection = select_config_jobs(jobs, now, args.due_window_seconds, args.job_index)
     pending_jobs = selection["pending"]
     skipped_jobs = selection["skipped"]
@@ -2018,11 +2077,27 @@ def run_config(args: argparse.Namespace, config: dict[str, Any]) -> int:
                 f"future: {len(future_jobs)}",
                 f"due_window_seconds: {args.due_window_seconds}",
                 f"book: {args.book}",
+                f"opening_checks: {len(opening_diagnostics)}",
+                *[
+                    (
+                        f"opening_check_{index}: probe={diag.get('probe_date')} "
+                        f"api_due={diag.get('due_date') or 'none'} "
+                        f"matching={diag.get('matching_job_count')} "
+                        f"next_configured={','.join(str(value) for value in diag.get('configured_dates') or []) or '-'}"
+                    )
+                    for index, diag in enumerate(opening_diagnostics, 1)
+                ],
                 f"at: {dt.datetime.now().astimezone().isoformat(timespec='seconds')}",
             ]
         ),
         args.no_color,
     )
+    if not jobs and any(diag.get("due_date") and not diag.get("matching_job_count") for diag in opening_diagnostics):
+        notify_telegram(
+            "debug",
+            format_opening_diagnostics_message("Booking cron found API/config mismatch", opening_diagnostics, now),
+            args.no_color,
+        )
     if not jobs:
         return 0
 

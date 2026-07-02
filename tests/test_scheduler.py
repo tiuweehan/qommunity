@@ -299,6 +299,29 @@ class TelegramMessageTest(unittest.TestCase):
         self.assertIn("Job: 1", message)
         self.assertIn("Date: 2026-07-23 (Thu)", message)
 
+    def test_opening_diagnostics_message_includes_api_and_config_dates(self) -> None:
+        now = dt.datetime.fromisoformat("2026-07-02T09:00:00+08:00")
+
+        message = tb.format_opening_diagnostics_message(
+            "Booking cron found API/config mismatch",
+            [
+                {
+                    "facility_id": "court-3",
+                    "probe_date": "2026-08-02",
+                    "due_date": "2026-08-03",
+                    "matching_job_count": 0,
+                    "active_config_count": 1042,
+                    "configured_dates": ["2026-08-02", "2026-08-09"],
+                }
+            ],
+            now,
+        )
+
+        self.assertIn("Booking cron found API/config mismatch", message)
+        self.assertIn("api_due_date: 2026-08-03", message)
+        self.assertIn("matching_jobs: 0", message)
+        self.assertIn("next_configured_dates: 2026-08-02, 2026-08-09", message)
+
     def test_success_message_includes_timeline_and_booking_id(self) -> None:
         job = tb.expand_config_jobs(sample_config())[0]
         tz = job["start_at"].tzinfo
